@@ -1,0 +1,161 @@
+/* Base styling for RENEE Warehouse */
+
+html, body {
+    height: 100%;
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    flex-direction: column;
+    background-color: #f9f9f9;
+}
+
+.header {
+    background: #fff;
+    padding: 20px 40px;
+    border-bottom: 1px solid #e5e5e5;
+    display: flex;
+    justify-content: flex-start;
+    align-items: center;
+}
+
+.header__heading-logo {
+    max-height: 40px;
+}
+
+#MainContent {
+    flex: 1 0 auto;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    padding: 40px 20px;
+}
+
+.warehouse-login {
+    width: 100%;
+    max-width: 400px;
+    background: #fff;
+    padding: 40px;
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.08);
+    text-align: center;
+}
+
+.warehouse-login h1 {
+    margin-top: 0;
+    margin-bottom: 30px;
+    font-size: 28px;
+    color: #000;
+}
+
+.warehouse-login form p {
+    display: flex;
+    flex-direction: column;
+    text-align: left;
+    margin-bottom: 20px;
+}
+
+.warehouse-login form label {
+    margin-bottom: 8px;
+    font-weight: 600;
+    font-size: 14px;
+    color: #333;
+}
+
+.warehouse-login form input[type="text"],
+.warehouse-login form input[type="password"] {
+    width: 100%;
+    padding: 12px 15px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-size: 16px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+}
+
+.warehouse-login form input[type="text"]:focus,
+.warehouse-login form input[type="password"]:focus {
+    border-color: #000;
+    outline: none;
+}
+
+.warehouse-login button[type="submit"] {
+    width: 100%;
+    padding: 14px;
+    margin-top: 15px;
+    background-color: #000;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.warehouse-login button[type="submit"]:hover {
+    background-color: #333;
+}
+
+.button {
+    display: inline-block;
+    padding: 12px 24px;
+    background-color: #000;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+    transition: background-color 0.2s;
+}
+
+.button--secondary {
+    background-color: #f4f4f4;
+    color: #333;
+    border: 1px solid #ccc;
+}
+
+.button:hover {
+    background-color: #333;
+}
+
+.button--secondary:hover {
+    background-color: #e5e5e5;
+    color: #000;
+}
+
+.footer {
+    flex-shrink: 0;
+    background-color: #000;
+    color: #fff;
+    padding: 40px 20px;
+    text-align: center;
+}
+
+.footer__content-top {
+    max-width: 800px;
+    margin: 0 auto;
+    padding-bottom: 30px;
+    border-bottom: 1px solid #333;
+}
+
+.footer__logo {
+    display: block;
+    margin: 0 auto 20px auto;
+}
+
+.footer__description {
+    font-size: 14px;
+    line-height: 1.6;
+    color: #ccc;
+}
+
+.footer__content-bottom {
+    max-width: 800px;
+    margin: 0 auto;
+    padding-top: 20px;
+}
+
+.copyright__content p {
+    margin: 0;
+    font-size: 12px;
+    color: #999;
+}
