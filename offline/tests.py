@@ -51,16 +51,28 @@ class UtilsTestCase(TestCase):
         self.assertEqual(str(df.iloc[0]["Item No"]), "200453")
         self.assertEqual(df.iloc[0]["Qty"], 1000)
 
+from django.contrib.auth.models import User
+
 class ViewsTestCase(TestCase):
     def setUp(self):
         self.client = Client()
+        self.user = User.objects.create_user(username='testuser', password='testpassword')
 
     def test_index_view(self):
+        # login first
+        self.client.login(username='testuser', password='testpassword')
         response = self.client.get(reverse('index'))
         self.assertEqual(response.status_code, 200)
         self.assertTemplateUsed(response, 'offline/index.html')
 
     def test_process_files_view_no_files(self):
+        # login first
+        self.client.login(username='testuser', password='testpassword')
         response = self.client.post(reverse('process_files'))
         self.assertEqual(response.status_code, 400)
         self.assertJSONEqual(response.content, {"error": "No files selected"})
+
+    def test_home_view(self):
+        response = self.client.get(reverse('home'))
+        self.assertEqual(response.status_code, 200)
+        self.assertTemplateUsed(response, 'offline/home.html')
