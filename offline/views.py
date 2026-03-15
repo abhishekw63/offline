@@ -5,6 +5,9 @@ from django.http import HttpResponse, JsonResponse
 from .utils import GTMassAutomation
 from datetime import datetime
 
+class OfflineDashboardView(LoginRequiredMixin, TemplateView):
+    template_name = 'offline/dashboard.html'
+
 class IndexView(LoginRequiredMixin, TemplateView):
     template_name = 'offline/index.html'
 

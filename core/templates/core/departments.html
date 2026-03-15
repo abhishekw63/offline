@@ -1,22 +1,8 @@
-{% load static %}
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Departments - RENEE Warehouse</title>
-    <link rel="stylesheet" href="{% static 'core/css/style.css' %}">
-</head>
-<body>
+{% extends 'core/base.html' %}
 
-<header class="header">
-    <a href="{% url 'home' %}" class="header__heading-link">
-        <img alt="Renee Cosmetics" class="header__heading-logo"
-             src="//www.reneecosmetics.in/cdn/shop/files/logo.svg?v=1751370718&amp;width=600" />
-    </a>
-</header>
+{% block title %}Departments - RENEE Warehouse{% endblock %}
 
-<main id="MainContent">
+{% block content %}
     <div class="departments-container">
         <h1>Select Department</h1>
         <div class="departments-grid">
@@ -25,7 +11,7 @@
                 <span>Coming Soon</span>
             </a>
 
-            <a href="{% url 'index' %}" class="department-card">
+            <a href="{% url 'offline_dashboard' %}" class="department-card">
                 <h2>Offline</h2>
                 <span style="font-size: 12px; color: #777; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px;">Active</span>
             </a>
@@ -57,23 +43,4 @@
             <button class="button button--secondary" type="submit">Log Out</button>
         </form>
     </div>
-</main>
-
-<footer class="footer">
-    <div class="footer__content-top">
-        <img alt="Renee Cosmetics Logo" class="footer__logo" width="123" height="39"
-             src="//www.reneecosmetics.in/cdn/shop/files/Group_60c1edc9-6b03-4813-905e-c2f02f051e6b.svg?v=1751452280" />
-        <p class="footer__description">
-            Timelessly inspired, endlessly enhanced- RENÉE Cosmetics is an Indian makeup brand that's redefining beauty with its range of high quality, cruelty-free and FDA-approved innovative range of products. RENÉE believes in empowering women to own and enjoy their bold, ambitious persona and let their glam do the talking.
-        </p>
-    </div>
-    <div class="footer__content-bottom">
-        <div class="copyright__content">
-            <p>©RENÉE Cosmetics Private Limited 2025. All Rights Reserved</p>
-        </div>
-    </div>
-</footer>
-
-<script src="{% static 'core/js/script.js' %}"></script>
-</body>
-</html>
+{% endblock %}
