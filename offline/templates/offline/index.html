@@ -65,13 +65,26 @@
         .header {
              margin-bottom: 20px;
         }
+        .back-link {
+            display: inline-block;
+            margin-bottom: 15px;
+            color: #d81b60;
+            text-decoration: none;
+            font-size: 14px;
+        }
+        .back-link:hover {
+            text-decoration: underline;
+        }
     </style>
 </head>
 <body>
     <div class="container">
+        <div style="text-align: left;">
+            <a href="{% url 'departments' %}" class="back-link">&larr; Back to Departments</a>
+        </div>
         <div class="header">
             <h2>RENEE Cosmetics</h2>
-            <h4>GT Mass Dump Generator</h4>
+            <h4>Offline - GT Mass Dump Generator</h4>
         </div>
 
         <form id="uploadForm">

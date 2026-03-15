@@ -71,8 +71,3 @@ class ViewsTestCase(TestCase):
         response = self.client.post(reverse('process_files'))
         self.assertEqual(response.status_code, 400)
         self.assertJSONEqual(response.content, {"error": "No files selected"})
-
-    def test_home_view(self):
-        response = self.client.get(reverse('home'))
-        self.assertEqual(response.status_code, 200)
-        self.assertTemplateUsed(response, 'offline/home.html')

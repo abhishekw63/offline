@@ -37,7 +37,13 @@ INSTALLED_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "core",
     'offline',
+    'online_b2b',
+    'returns',
+    'online_b2c',
+    'inventory',
+    'other',
 ]
 
 MIDDLEWARE = [
@@ -118,3 +124,6 @@ USE_TZ = True
 STATIC_URL = "static/"
 import os
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+LOGIN_URL = 'login'
+LOGIN_REDIRECT_URL = 'departments'

@@ -5,7 +5,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Login - RENEE Warehouse</title>
-    <link rel="stylesheet" href="{% static 'offline/css/style.css' %}">
+    <link rel="stylesheet" href="{% static 'core/css/style.css' %}">
 </head>
 <body>
 
@@ -28,7 +28,7 @@
         {% else %}
             <h1>Welcome, {{ user.username }}</h1>
             <p>You are successfully logged in to the RENEE Warehouse application.</p>
-            <a class="button" href="{% url 'index' %}" style="margin-bottom: 20px;">Go to GT Mass Dump Generator</a>
+            <a class="button" href="{% url 'departments' %}" style="margin-bottom: 20px;">Go to Departments</a>
             <form action="{% url 'logout' %}" method="post">
                 {% csrf_token %}
                 <button class="button button--secondary" type="submit">Log Out</button>
@@ -52,6 +52,6 @@
     </div>
 </footer>
 
-<script src="{% static 'offline/js/script.js' %}"></script>
+<script src="{% static 'core/js/script.js' %}"></script>
 </body>
 </html>

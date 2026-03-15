@@ -1,23 +1,13 @@
 from django.shortcuts import render
 from django.views.generic import TemplateView, View
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.contrib.auth.views import LoginView
-from django.urls import reverse_lazy
-
-class HomeView(LoginView):
-    template_name = 'offline/home.html'
-    redirect_authenticated_user = False
-
-    def get_success_url(self):
-        return reverse_lazy('index')
+from django.http import HttpResponse, JsonResponse
+from .utils import GTMassAutomation
+from datetime import datetime
 
 class IndexView(LoginRequiredMixin, TemplateView):
     template_name = 'offline/index.html'
 
-
-from django.http import HttpResponse, JsonResponse
-from .utils import GTMassAutomation
-from datetime import datetime
 
 class ProcessFilesView(LoginRequiredMixin, View):
     def post(self, request, *args, **kwargs):
