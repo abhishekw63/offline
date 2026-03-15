@@ -2,3 +2,6 @@
 output
 __pycache__
 *.pycstaticfiles/
+build
+dist
+GT_Mass_Dump_Generator.spec
