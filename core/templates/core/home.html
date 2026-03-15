@@ -32,6 +32,10 @@
                 <button type="submit">Log In</button>
             </form>
 
+            <div style="margin-top: 20px; text-align: center; font-size: 14px;">
+                Don't have an account? <a href="{% url 'signup' %}" style="color: #000; font-weight: 500;">Create one here</a>
+            </div>
+
             <script>
                 document.addEventListener('DOMContentLoaded', function() {
                     const toastContainer = document.getElementById('toast-container');
