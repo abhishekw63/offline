@@ -58,6 +58,29 @@ html, body {
     align-items: center;
 }
 
+.header__user-menu {
+    display: flex;
+    align-items: center;
+    gap: 15px;
+}
+
+.header__username {
+    display: flex;
+    align-items: center;
+    color: #333;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    transition: background-color 0.2s, color 0.2s;
+}
+
+.header__username:hover {
+    background-color: #f5f5f5;
+    color: #000;
+}
+
 .header__logout-form {
     margin: 0;
 }
@@ -85,7 +108,7 @@ html, body {
     padding: 40px 20px;
 }
 
-.warehouse-login {
+.warehouse-login, .warehouse-form-container {
     width: 100%;
     max-width: 400px;
     background: #fff;
@@ -95,21 +118,25 @@ html, body {
     text-align: center;
 }
 
-.warehouse-login h1 {
+.warehouse-form-container {
+    max-width: 800px;
+}
+
+.warehouse-login h1, .warehouse-form-container h1 {
     margin-top: 0;
     margin-bottom: 30px;
     font-size: 28px;
     color: #000;
 }
 
-.warehouse-login form p {
+.warehouse-login form p, .warehouse-form-container form p {
     display: flex;
     flex-direction: column;
     text-align: left;
     margin-bottom: 20px;
 }
 
-.warehouse-login form label {
+.warehouse-login form label, .warehouse-form-container form label {
     margin-bottom: 8px;
     font-weight: 600;
     font-size: 14px;
@@ -117,7 +144,11 @@ html, body {
 }
 
 .warehouse-login form input[type="text"],
-.warehouse-login form input[type="password"] {
+.warehouse-login form input[type="password"],
+.warehouse-login form input[type="email"],
+.warehouse-form-container form input[type="text"],
+.warehouse-form-container form input[type="password"],
+.warehouse-form-container form input[type="email"] {
     width: 100%;
     padding: 12px 15px;
     border: 1px solid #ddd;
@@ -127,13 +158,14 @@ html, body {
     box-sizing: border-box;
 }
 
-.warehouse-login form input[type="text"]:focus,
-.warehouse-login form input[type="password"]:focus {
+.warehouse-login form input:focus,
+.warehouse-form-container form input:focus {
     border-color: #000;
     outline: none;
 }
 
-.warehouse-login button[type="submit"] {
+.warehouse-login button[type="submit"],
+.warehouse-form-container button[type="submit"] {
     width: 100%;
     padding: 14px;
     margin-top: 15px;
@@ -147,8 +179,59 @@ html, body {
     transition: background-color 0.2s;
 }
 
-.warehouse-login button[type="submit"]:hover {
+.warehouse-login button[type="submit"]:hover,
+.warehouse-form-container button[type="submit"]:hover {
     background-color: #333;
+}
+
+.profile-layout {
+    display: flex;
+    gap: 40px;
+    text-align: left;
+    flex-wrap: wrap;
+}
+
+.profile-section {
+    flex: 2;
+    min-width: 300px;
+}
+
+.profile-section--secondary {
+    flex: 1;
+    min-width: 200px;
+    padding: 20px;
+    background: #f9f9f9;
+    border-radius: 6px;
+    border: 1px solid #eaeaea;
+    align-self: flex-start;
+}
+
+.profile-section h2 {
+    font-size: 20px;
+    margin-top: 0;
+    margin-bottom: 20px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eaeaea;
+}
+
+.errorlist {
+    color: #dc3545;
+    font-size: 12px;
+    list-style: none;
+    padding: 0;
+    margin: 5px 0 0 0;
+}
+
+.help-text {
+    font-size: 12px;
+    color: #777;
+    margin-top: 5px;
+    line-height: 1.4;
+}
+
+.help-text ul {
+    padding-left: 20px;
+    margin: 5px 0;
 }
 
 .button {
@@ -218,9 +301,9 @@ html, body {
 /* Toast Notifications */
 .toast-container {
     position: fixed;
-    top: 20px;
+    top: 80px;
     right: 20px;
-    z-index: 1000;
+    z-index: 9999;
     display: flex;
     flex-direction: column;
     gap: 10px;
@@ -230,14 +313,14 @@ html, body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    min-width: 250px;
-    max-width: 350px;
-    padding: 15px 20px;
-    border-radius: 8px;
+    min-width: 200px;
+    max-width: 300px;
+    padding: 10px 15px;
+    border-radius: 6px;
     color: #fff;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
     animation: slideInRight 0.3s ease-out forwards;
 }
 
