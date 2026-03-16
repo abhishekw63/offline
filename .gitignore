@@ -5,6 +5,3 @@ __pycache__
 staticfiles/
 db.sqlite3
 server.log
-build
-dist
-GT_Mass_Dump_Generator.spec
