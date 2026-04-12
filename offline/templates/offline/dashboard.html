@@ -1,0 +1,28 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Offline Dashboard - RENEE Warehouse{% endblock %}
+
+{% block breadcrumb %}
+    <a href="{% url 'departments' %}">Departments</a>
+    <span class="separator">/</span>
+    <span>Offline</span>
+{% endblock %}
+
+{% block content %}
+    <div class="departments-container">
+        <h1>Offline Department</h1>
+        <p style="margin-bottom: 30px;">Select an application feature.</p>
+
+        <div class="departments-grid">
+            <a href="{% url 'index' %}" class="department-card">
+                <h2>GT Mass Dump Generator</h2>
+                <span style="font-size: 12px; color: #777; margin-top: 10px; text-transform: uppercase; letter-spacing: 1px;">Excel Tool</span>
+            </a>
+
+            <a href="#" class="department-card coming-soon" onclick="alert('More features coming soon.'); return false;">
+                <h2>Coming Soon</h2>
+                <span>Other Features</span>
+            </a>
+        </div>
+    </div>
+{% endblock %}

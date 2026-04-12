@@ -1,0 +1,77 @@
+{% load static %}
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}RENEE Warehouse{% endblock %}</title>
+    <link rel="stylesheet" href="{% static 'core/css/style.css' %}">
+</head>
+<body>
+
+<header class="header">
+    <div class="header__left">
+        <a href="{% url 'home' %}" class="header__heading-link">
+            <img alt="Renee Cosmetics" class="header__heading-logo"
+                 src="//www.reneecosmetics.in/cdn/shop/files/logo.svg?v=1751370718&amp;width=600" />
+        </a>
+        {% if user.is_authenticated %}
+        <nav class="header__breadcrumb">
+            {% block breadcrumb %}
+            <!-- Default empty breadcrumb -->
+            {% endblock %}
+        </nav>
+        {% endif %}
+    </div>
+    <div class="header__right">
+        {% if user.is_authenticated %}
+        <div class="header__user-menu">
+            <a href="{% url 'profile' %}" class="header__username" title="My Account">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 5px;"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                {{ user.username }}
+            </a>
+            <form action="{% url 'logout' %}" method="post" class="header__logout-form">
+                {% csrf_token %}
+                <button class="button button--logout" type="submit">Log Out</button>
+            </form>
+        </div>
+        {% endif %}
+    </div>
+</header>
+
+<!-- Toast Notifications Container -->
+<div id="toast-container" class="toast-container">
+    {% if messages %}
+        {% for message in messages %}
+            <div class="toast toast-{{ message.tags }}">
+                <span>{{ message }}</span>
+                <button class="toast-close" onclick="this.parentElement.remove();">&times;</button>
+            </div>
+        {% endfor %}
+    {% endif %}
+    {% block form_errors %}{% endblock %}
+</div>
+
+<main id="MainContent">
+    {% block content %}
+    {% endblock %}
+</main>
+
+<footer class="footer">
+    <div class="footer__content-top">
+        <img alt="Renee Cosmetics Logo" class="footer__logo" width="123" height="39"
+             src="//www.reneecosmetics.in/cdn/shop/files/Group_60c1edc9-6b03-4813-905e-c2f02f051e6b.svg?v=1751452280" />
+        <p class="footer__description">
+            Timelessly inspired, endlessly enhanced- RENÉE Cosmetics is an Indian makeup brand that's redefining beauty with its range of high quality, cruelty-free and FDA-approved innovative range of products. RENÉE believes in empowering women to own and enjoy their bold, ambitious persona and let their glam do the talking.
+        </p>
+    </div>
+    <div class="footer__content-bottom">
+        <div class="copyright__content">
+            <p>©RENÉE Cosmetics Private Limited 2025. All Rights Reserved</p>
+        </div>
+    </div>
+</footer>
+
+<script src="{% static 'core/js/script.js' %}"></script>
+</body>
+</html>

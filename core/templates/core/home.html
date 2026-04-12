@@ -1,0 +1,59 @@
+{% extends 'core/base.html' %}
+
+{% block title %}Login - RENEE Warehouse{% endblock %}
+
+{% block form_errors %}
+    {% if form.non_field_errors %}
+        {% for error in form.non_field_errors %}
+            <div class="toast toast-error">
+                <span>{{ error }}</span>
+                <button class="toast-close" onclick="this.parentElement.remove();">&times;</button>
+            </div>
+        {% endfor %}
+    {% endif %}
+{% endblock %}
+
+{% block content %}
+    <div class="warehouse-login">
+        {% if not user.is_authenticated %}
+            <h1>Login</h1>
+            <form action="{% url 'login' %}" method="post">
+                {% csrf_token %}
+
+                <p>
+                    <label for="{{ form.username.id_for_label }}">Username:</label>
+                    {{ form.username }}
+                </p>
+                <p>
+                    <label for="{{ form.password.id_for_label }}">Password:</label>
+                    {{ form.password }}
+                </p>
+
+                <button type="submit">Log In</button>
+            </form>
+
+            {% if form.username.errors or form.password.errors %}
+                <div class="errorlist" style="margin-top: 10px; text-align: left;">
+                    {% for error in form.username.errors %}
+                        <li>{{ error }}</li>
+                    {% endfor %}
+                    {% for error in form.password.errors %}
+                        <li>{{ error }}</li>
+                    {% endfor %}
+                </div>
+            {% endif %}
+
+            <div class="form-footer-link">
+                Don't have an account? <a href="{% url 'signup' %}">Create one here</a>
+            </div>
+        {% else %}
+            <h1>Welcome, {{ user.username }}</h1>
+            <p>You are successfully logged in to the RENEE Warehouse application.</p>
+            <a class="button" href="{% url 'departments' %}" style="margin-bottom: 20px;">Go to Departments</a>
+            <form action="{% url 'logout' %}" method="post">
+                {% csrf_token %}
+                <button class="button button--secondary" type="submit">Log Out</button>
+            </form>
+        {% endif %}
+    </div>
+{% endblock %}

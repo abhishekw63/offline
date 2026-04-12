@@ -1,0 +1,194 @@
+{% extends 'core/base.html' %}
+
+{% block title %}GT Mass Dump - Offline - RENEE Warehouse{% endblock %}
+
+{% block breadcrumb %}
+    <a href="{% url 'departments' %}">Departments</a>
+    <span class="separator">/</span>
+    <a href="{% url 'offline_dashboard' %}">Offline</a>
+    <span class="separator">/</span>
+    <span>GT Mass Dump</span>
+{% endblock %}
+
+{% block content %}
+    <style>
+        .tool-container {
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+            border: 1px solid #eaeaea;
+            text-align: center;
+            max-width: 500px;
+            width: 100%;
+            margin: 0 auto;
+        }
+        .tool-container h2 {
+            color: #000;
+            margin-top: 0;
+            margin-bottom: 5px;
+        }
+        .tool-container h4 {
+            color: #666;
+            margin-top: 0;
+            margin-bottom: 30px;
+            font-weight: 400;
+        }
+        .file-upload-wrapper {
+            margin: 20px 0;
+        }
+        input[type="file"] {
+            display: none;
+        }
+        .custom-file-upload {
+            border: 1px dashed #ccc;
+            display: block;
+            padding: 30px 20px;
+            cursor: pointer;
+            border-radius: 6px;
+            background-color: #fafafa;
+            color: #555;
+            transition: all 0.2s;
+        }
+        .custom-file-upload:hover {
+            background-color: #f0f0f0;
+            border-color: #999;
+        }
+        .btn-generate {
+            background-color: #000;
+            color: white;
+            padding: 14px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 600;
+            width: 100%;
+            margin-top: 20px;
+            transition: background-color 0.2s;
+        }
+        .btn-generate:hover {
+            background-color: #333;
+        }
+        .btn-generate:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+            padding: 10px;
+            border-radius: 4px;
+            background: #f9f9f9;
+        }
+    </style>
+
+    <div class="tool-container">
+        <div class="header">
+            <h2>GT Mass Dump Generator</h2>
+            <h4>Select offline excel files to merge and format</h4>
+        </div>
+
+        <form id="uploadForm">
+            {% csrf_token %}
+            <div class="file-upload-wrapper">
+                <label for="fileInput" class="custom-file-upload">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin: 0 auto 10px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    Click to Select Excel Files
+                </label>
+                <input type="file" id="fileInput" name="files" accept=".xlsx, .xls" multiple required>
+            </div>
+
+            <div id="fileCount" style="font-size: 14px; font-weight: 500;">Selected Files: 0</div>
+
+            <button type="submit" class="btn-generate" id="generateBtn">Generate Dump</button>
+        </form>
+
+        <div class="status" id="statusMessage" style="display: none;"></div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const fileInput = document.getElementById('fileInput');
+            const fileCount = document.getElementById('fileCount');
+            const uploadForm = document.getElementById('uploadForm');
+            const statusMessage = document.getElementById('statusMessage');
+            const generateBtn = document.getElementById('generateBtn');
+
+            fileInput.addEventListener('change', () => {
+                fileCount.textContent = `Selected Files: ${fileInput.files.length}`;
+            });
+
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+
+                if (fileInput.files.length === 0) {
+                    alert("Please select files first");
+                    return;
+                }
+
+                statusMessage.style.display = 'block';
+                statusMessage.textContent = "Processing files...";
+                generateBtn.disabled = true;
+
+                const formData = new FormData(uploadForm);
+                const csrfToken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+                try {
+                    const response = await fetch("{% url 'process_files' %}", {
+                        method: 'POST',
+                        body: formData,
+                        headers: {
+                            'X-CSRFToken': csrfToken
+                        }
+                    });
+
+                    if (response.ok) {
+                        const blob = await response.blob();
+                        const disposition = response.headers.get('Content-Disposition');
+                        let filename = 'gt_mass_dump.xlsx';
+
+                        if (disposition && disposition.indexOf('filename=') !== -1) {
+                            const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
+                            const matches = filenameRegex.exec(disposition);
+                            if (matches != null && matches[1]) {
+                                filename = matches[1].replace(/['"]/g, '');
+                            }
+                        }
+
+                        const downloadUrl = window.URL.createObjectURL(blob);
+                        const a = document.createElement('a');
+                        a.href = downloadUrl;
+                        a.download = filename;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        window.URL.revokeObjectURL(downloadUrl);
+
+                        statusMessage.textContent = "Success! Dump generated.";
+                        statusMessage.style.color = "#28a745";
+                        statusMessage.style.background = "#d4edda";
+                        statusMessage.style.border = "1px solid #c3e6cb";
+                    } else {
+                        const errorData = await response.json();
+                        alert(errorData.error || "An error occurred");
+                        statusMessage.textContent = "Error occurred.";
+                        statusMessage.style.color = "#dc3545";
+                        statusMessage.style.background = "#f8d7da";
+                        statusMessage.style.border = "1px solid #f5c6cb";
+                    }
+                } catch (error) {
+                    console.error('Error:', error);
+                    alert("Failed to process files");
+                    statusMessage.textContent = "Error processing files.";
+                    statusMessage.style.color = "#dc3545";
+                    statusMessage.style.background = "#f8d7da";
+                    statusMessage.style.border = "1px solid #f5c6cb";
+                } finally {
+                    generateBtn.disabled = false;
+                }
+            });
+        });
+    </script>
+{% endblock %}
