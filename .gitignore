@@ -1,7 +1,11 @@
 .venv
+output_grn
 output
 __pycache__
 *.pyc
-staticfiles/
-db.sqlite3
-server.log
+build
+dist
+*.egg-info
+*.spec
+output_parsed
+po_output
