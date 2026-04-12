@@ -527,22 +527,34 @@ class POEngine:
         df = pd.read_excel(path, header=0)
         df['GTIN_str'] = df['GTIN'].astype(str).str.strip()
         self.master = {}
-        for _, r in df.iterrows():
-            desc = str(r['Description']) if 'Description' in df.columns and pd.notna(r.get('Description')) else ''
+
+        # Get indices for faster access over values
+        gtin_idx = df.columns.get_loc('GTIN_str')
+        desc_idx = df.columns.get_loc('Description') if 'Description' in df.columns else None
+        no_idx = df.columns.get_loc('No.')
+        mrp_idx = df.columns.get_loc('Mrp')
+        gst_idx = df.columns.get_loc('GST Group Code') if 'GST Group Code' in df.columns else None
+
+        # Iterate via values for performance (avoiding overhead of Series creation per row)
+        for r_vals in df.values:
+            desc = str(r_vals[desc_idx]) if desc_idx is not None and pd.notna(r_vals[desc_idx]) else ''
+
+            gst_val = str(r_vals[gst_idx]) if gst_idx is not None and pd.notna(r_vals[gst_idx]) else ''
+
             # Primary index: by GTIN (EAN barcode)
-            self.master[r['GTIN_str']] = {
-                'item_no': r['No.'],
-                'mrp': r['Mrp'],
-                'gst_code': str(r['GST Group Code']) if pd.notna(r['GST Group Code']) else '',
+            self.master[r_vals[gtin_idx]] = {
+                'item_no': r_vals[no_idx],
+                'mrp': r_vals[mrp_idx],
+                'gst_code': gst_val,
                 'description': desc,
             }
             # Secondary index: by No. (item code) — for non-stock internal codes
-            item_code = str(r['No.']).strip()
+            item_code = str(r_vals[no_idx]).strip()
             if item_code not in self.master:
                 self.master[item_code] = {
-                    'item_no': r['No.'],
-                    'mrp': r['Mrp'],
-                    'gst_code': str(r['GST Group Code']) if pd.notna(r['GST Group Code']) else '',
+                    'item_no': r_vals[no_idx],
+                    'mrp': r_vals[mrp_idx],
+                    'gst_code': gst_val,
                     'description': desc,
                 }
         return len(df)
@@ -556,24 +568,37 @@ class POEngine:
             Landing Cost = MRP × 60%
             Cost Price   = Landing Cost ÷ (1 + GST rate)
         
-        GST rates:
-            G-18-S → 18% GST → divide by 1.18
-            G-5-S  → 5% GST  → divide by 1.05
-            G-0    → 0% GST  → no division
-            Unknown → default to 18%
+        GST codes in Items_March and their divisors:
+            0-G      (9 items)    → 0% GST  → ÷ 1.00
+            G-3      (1 item)     → 3% GST  → ÷ 1.03
+            G-5      (1084 items) → 5% GST  → ÷ 1.05
+            G-5-S    (108 items)  → 5% GST  → ÷ 1.05
+            G-12     (67 items)   → 12% GST → ÷ 1.12
+            G-18     (2022 items) → 18% GST → ÷ 1.18
+            G-18-S   (1364 items) → 18% GST → ÷ 1.18
         
         ⚠ This is ONLY for regular PO orders. Testers use flat ₹0.54.
         """
         if mrp is None or pd.isna(mrp):
             return None
         landing = float(mrp) * 0.60
-        gst = str(gst_code).upper()
-        if 'G-18' in gst:
-            return landing / 1.18
-        elif 'G-5' in gst:
-            return landing / 1.05
-        elif 'G-0' in gst or gst in ('', 'NAN'):
+        gst = str(gst_code).strip().upper()
+        # 0% GST (0-G, G-0, empty)
+        if gst in ('0-G', 'G-0', 'G-0-S', '0', '') or gst == 'NAN':
             return landing
+        # 3% GST (G-3)
+        if gst in ('G-3', 'G-3-S'):
+            return landing / 1.03
+        # 5% GST (G-5, G-5-S)
+        if '5' in gst and '18' not in gst and '12' not in gst:
+            return landing / 1.05
+        # 12% GST (G-12, G-12-S)
+        if '12' in gst:
+            return landing / 1.12
+        # 18% GST (G-18, G-18-S)
+        if '18' in gst:
+            return landing / 1.18
+        # Unknown — default to 18%
         return landing / 1.18
 
     def _detect_po_columns(self, ws, logs: Optional[List] = None) -> Dict[str, int]:
@@ -667,7 +692,15 @@ class POEngine:
 
             if info:
                 item_no = info['item_no']
-                cost = self.calc_cost_price(info['mrp'], info['gst_code'])
+                gst_code = info['gst_code']
+
+                # Warn if GST code is not in known set
+                known_gst = {'0-G', 'G-3', 'G-3-S', 'G-5', 'G-5-S', 'G-12', 'G-12-S', 'G-18', 'G-18-S', ''}
+                gst_upper = str(gst_code).strip().upper()
+                if gst_upper not in known_gst and gst_upper != 'NAN':
+                    logs.append(('warn', f"PO row {row_num}: Unknown GST code '{gst_code}' for Item {item_no} — defaulting to 18%"))
+
+                cost = self.calc_cost_price(info['mrp'], gst_code)
                 status = 'OK'
             else:
                 item_no = f'?EAN:{ean}'
