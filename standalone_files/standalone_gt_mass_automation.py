@@ -363,11 +363,10 @@ class MetaExtractor:
 
         meta_df = raw_df.iloc[:header_row]
 
-        # Iterate via values for performance (avoiding overhead of Series creation per row)
-        for row_vals in meta_df.values:
+        for _, row in meta_df.iterrows():
             # ── Column A/B scanning (Distributor, City, State) ──
-            label = str(row_vals[0]).strip().lower() if pd.notna(row_vals[0]) else ""
-            value = str(row_vals[1]).strip() if pd.notna(row_vals[1]) else ""
+            label = str(row.iloc[0]).strip().lower() if pd.notna(row.iloc[0]) else ""
+            value = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
             if value.lower() in ("nan", ""):
                 value = ""
 
@@ -383,12 +382,12 @@ class MetaExtractor:
             # ── Column G/I scanning (Location) ──
             # Location label is typically at column index 6 ("Location")
             # Location value is at column index 8 (e.g., "AHD")
-            for col_idx in range(min(len(row_vals) - 1, 10)):
-                cell_val = str(row_vals[col_idx]).strip().lower() if pd.notna(row_vals[col_idx]) else ""
+            for col_idx in range(min(len(row) - 1, 10)):
+                cell_val = str(row.iloc[col_idx]).strip().lower() if pd.notna(row.iloc[col_idx]) else ""
                 if cell_val == "location":
                     # Look for value in the next available column(s)
-                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row_vals))):
-                        loc_val = row_vals[val_idx]
+                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row))):
+                        loc_val = row.iloc[val_idx]
                         if pd.notna(loc_val) and str(loc_val).strip() and str(loc_val).strip().lower() != 'nan':
                             location = str(loc_val).strip()
                             logging.info(f"Location found: '{location}'")

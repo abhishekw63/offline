@@ -527,34 +527,22 @@ class POEngine:
         df = pd.read_excel(path, header=0)
         df['GTIN_str'] = df['GTIN'].astype(str).str.strip()
         self.master = {}
-
-        # Get indices for faster access over values
-        gtin_idx = df.columns.get_loc('GTIN_str')
-        desc_idx = df.columns.get_loc('Description') if 'Description' in df.columns else None
-        no_idx = df.columns.get_loc('No.')
-        mrp_idx = df.columns.get_loc('Mrp')
-        gst_idx = df.columns.get_loc('GST Group Code') if 'GST Group Code' in df.columns else None
-
-        # Iterate via values for performance (avoiding overhead of Series creation per row)
-        for r_vals in df.values:
-            desc = str(r_vals[desc_idx]) if desc_idx is not None and pd.notna(r_vals[desc_idx]) else ''
-
-            gst_val = str(r_vals[gst_idx]) if gst_idx is not None and pd.notna(r_vals[gst_idx]) else ''
-
+        for _, r in df.iterrows():
+            desc = str(r['Description']) if 'Description' in df.columns and pd.notna(r.get('Description')) else ''
             # Primary index: by GTIN (EAN barcode)
-            self.master[r_vals[gtin_idx]] = {
-                'item_no': r_vals[no_idx],
-                'mrp': r_vals[mrp_idx],
-                'gst_code': gst_val,
+            self.master[r['GTIN_str']] = {
+                'item_no': r['No.'],
+                'mrp': r['Mrp'],
+                'gst_code': str(r['GST Group Code']) if pd.notna(r['GST Group Code']) else '',
                 'description': desc,
             }
             # Secondary index: by No. (item code) — for non-stock internal codes
-            item_code = str(r_vals[no_idx]).strip()
+            item_code = str(r['No.']).strip()
             if item_code not in self.master:
                 self.master[item_code] = {
-                    'item_no': r_vals[no_idx],
-                    'mrp': r_vals[mrp_idx],
-                    'gst_code': gst_val,
+                    'item_no': r['No.'],
+                    'mrp': r['Mrp'],
+                    'gst_code': str(r['GST Group Code']) if pd.notna(r['GST Group Code']) else '',
                     'description': desc,
                 }
         return len(df)
