@@ -65,9 +65,8 @@ class ExcelParser:
 
         header_row = None
 
-        # Find the header row efficiently using enumeration over raw values
-        for i, row_vals in enumerate(raw_df.values):
-            row_values = [str(v).lower() for v in row_vals]
+        for i, row in raw_df.iterrows():
+            row_values = [str(v).lower() for v in row.values]
 
             if "bc code" in row_values and any("order qty" in v for v in row_values):
                 header_row = i
@@ -91,24 +90,19 @@ class ExcelParser:
 
         rows: List[OrderRow] = []
 
-        # Find indices of columns to fetch data efficiently
-        bc_idx = df.columns.get_loc(bc_col)
-        qty_idx = df.columns.get_loc(qty_col)
+        for _, row in df.iterrows():
 
-        # Iterate via values for performance (avoiding overhead of Series creation per row)
-        for row_vals in df.values:
-            bc_code = row_vals[bc_idx]
+            bc_code = row[bc_col]
 
             if pd.isna(bc_code):
                 continue
 
             try:
                 bc_code = int(bc_code)
-            except (ValueError, TypeError):
-                # If BC Code is not numeric or convertible, skip the row
+            except:
                 continue
 
-            qty = self._clean_qty(row_vals[qty_idx])
+            qty = self._clean_qty(row[qty_col])
 
             if qty <= 0:
                 continue
