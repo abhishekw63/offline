@@ -463,8 +463,9 @@ class ExcelParser:
 
         # ── Find header row (contains 'BC Code' and 'Order Qty') ──
         header_row = None
-        for i, row in raw_df.iterrows():
-            row_values = [str(v).lower() for v in row.values]
+        # Efficiently scan using enumeration on values to avoid Series generation overhead
+        for i, row_vals in enumerate(raw_df.values):
+            row_values = [str(v).lower() for v in row_vals]
             if "bc code" in row_values and any("order qty" in v for v in row_values):
                 header_row = i
                 break
@@ -504,17 +505,25 @@ class ExcelParser:
 
         # ── Extract ordered rows (order qty > 0 OR tester qty > 0) ──
         rows: List[OrderRow] = []
-        for _, row in df.iterrows():
-            bc_code = row[bc_col]
+
+        # Get indices for faster access over values
+        bc_idx = df.columns.get_loc(bc_col)
+        qty_idx = df.columns.get_loc(qty_col)
+        tester_idx = df.columns.get_loc(tester_col) if tester_col is not None else None
+
+        # Iterate via values for performance (avoiding overhead of Series creation per row)
+        for row_vals in df.values:
+            bc_code = row_vals[bc_idx]
             if pd.isna(bc_code):
                 continue
             try:
                 bc_code = int(bc_code)
             except (ValueError, TypeError):
+                # If BC Code is not numeric or convertible, skip the row
                 continue
 
-            qty = self._clean_qty(row[qty_col])
-            tester_qty = self._clean_qty(row[tester_col]) if tester_col is not None else 0
+            qty = self._clean_qty(row_vals[qty_idx])
+            tester_qty = self._clean_qty(row_vals[tester_idx]) if tester_idx is not None else 0
 
             # Skip rows where both order and tester are zero
             if qty <= 0 and tester_qty <= 0:
