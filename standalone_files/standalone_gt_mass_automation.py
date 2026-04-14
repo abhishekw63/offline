@@ -524,16 +524,11 @@ class MetaExtractor:
         # ── Only scan the meta rows (above the header row) ──
         meta_df = raw_df.iloc[:header_row]
 
-        for _, row in meta_df.iterrows():
-
-            # ────────────────────────────────────────────────────
-            # LEFT SIDE: Col A (label) + Col B (value)
-            # ────────────────────────────────────────────────────
-            # Read label from column A (index 0)
-            label = str(row.iloc[0]).strip().lower() if pd.notna(row.iloc[0]) else ""
-            # Read value from column B (index 1)
-            value = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
-            # Clean up "nan" strings (pandas converts empty cells to NaN → str → "nan")
+        # Iterate via values for performance (avoiding overhead of Series creation per row)
+        for row_vals in meta_df.values:
+            # ── Column A/B scanning (Distributor, City, State) ──
+            label = str(row_vals[0]).strip().lower() if pd.notna(row_vals[0]) else ""
+            value = str(row_vals[1]).strip() if pd.notna(row_vals[1]) else ""
             if value.lower() in ("nan", ""):
                 value = ""
 
@@ -549,18 +544,15 @@ class MetaExtractor:
                 # We'll pick the last non-blank one later
                 state_values.append(value)
 
-            # ────────────────────────────────────────────────────
-            # RIGHT SIDE: Scan Cols 0-9 for "PO Number", "Location"
-            # ────────────────────────────────────────────────────
-            # These labels are typically at Col G (index 6), values at Col I (index 8)
-            # But we scan broadly (cols 0-9) to handle slight layout variations
-            for col_idx in range(min(len(row) - 1, 10)):
-                cell_val = str(row.iloc[col_idx]).strip().lower() if pd.notna(row.iloc[col_idx]) else ""
-
-                # ── "Location" label → read value from next 1-2 columns ──
+            # ── Column G/I scanning (Location) ──
+            # Location label is typically at column index 6 ("Location")
+            # Location value is at column index 8 (e.g., "AHD")
+            for col_idx in range(min(len(row_vals) - 1, 10)):
+                cell_val = str(row_vals[col_idx]).strip().lower() if pd.notna(row_vals[col_idx]) else ""
                 if cell_val == "location":
-                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row))):
-                        loc_val = row.iloc[val_idx]
+                    # Look for value in the next available column(s)
+                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row_vals))):
+                        loc_val = row_vals[val_idx]
                         if pd.notna(loc_val) and str(loc_val).strip() and str(loc_val).strip().lower() != 'nan':
                             location = str(loc_val).strip()
                             logging.info(f"Location found: '{location}'")
@@ -684,11 +676,9 @@ class ExcelParser:
         # The header row is the one that contains BOTH 'BC Code' AND 'Order Qty'.
         # It's typically Row 6, but we scan to be safe.
         header_row = None
+        # Efficiently scan using enumeration on values to avoid Series generation overhead
         for i, row_vals in enumerate(raw_df.values):
-            # Convert all cell values to lowercase strings for matching
             row_values = [str(v).lower() for v in row_vals]
-            # Check: 'bc code' must be an exact cell value,
-            # 'order qty' can be a substring (handles "Order Qty (Retail)" etc.)
             if "bc code" in row_values and any("order qty" in v for v in row_values):
                 header_row = i
                 break
@@ -756,19 +746,14 @@ class ExcelParser:
         # Loop through each data row and create OrderRow for items with qty > 0
         rows: List[OrderRow] = []
 
-        # Pre-compute column indices for faster access (avoid repeated lookups)
+        # Get indices for faster access over values
         bc_idx = df.columns.get_loc(bc_col)
         qty_idx = df.columns.get_loc(qty_col)
         tester_idx = df.columns.get_loc(tester_col) if tester_col is not None else None
-        ean_idx = df.columns.get_loc(ean_col) if ean_col is not None else None
-        cat_idx = df.columns.get_loc(cat_col) if cat_col is not None else None
-        desc_idx = df.columns.get_loc(desc_col) if desc_col is not None else None
 
-        # Iterate through raw values (faster than df.iterrows() for large files)
+        # Iterate via values for performance (avoiding overhead of Series creation per row)
         for row_vals in df.values:
-            # ── Read BC Code (Item No) ──
             bc_code = row_vals[bc_idx]
-            # Skip rows with no BC Code (blank/NaN = empty row or summary row)
             if pd.isna(bc_code):
                 continue
             # BC Code must be numeric (e.g., 200163). Skip non-numeric values
@@ -776,11 +761,11 @@ class ExcelParser:
             try:
                 bc_code = int(bc_code)
             except (ValueError, TypeError):
+                # If BC Code is not numeric or convertible, skip the row
                 continue
 
-            # ── Read quantities ──
-            qty = self._clean_qty(row_vals[qty_idx])                                    # Order Qty
-            tester_qty = self._clean_qty(row_vals[tester_idx]) if tester_idx is not None else 0  # Tester Qty
+            qty = self._clean_qty(row_vals[qty_idx])
+            tester_qty = self._clean_qty(row_vals[tester_idx]) if tester_idx is not None else 0
 
             # Skip rows where BOTH order and tester are zero/blank
             # (no point creating a line for zero-quantity items)
