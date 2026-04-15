@@ -167,6 +167,8 @@ import platform                         # platform.system() to detect OS for fil
 import time                             # time.time() to measure processing duration
 import logging                          # Structured logging to console
 import re                               # Regex for SO number extraction from filename
+import smtplib                          # SMTP email sending
+from email.message import EmailMessage  # Email message construction
 import pandas as pd                     # Excel reading into DataFrames
 import tkinter as tk                    # GUI framework (bundled with Python)
 from tkinter import filedialog, messagebox  # File chooser dialog + alert popups
@@ -175,9 +177,19 @@ from pathlib import Path                # Cross-platform file path handling
 from typing import List, Optional, Tuple, Dict  # Type annotations for clarity
 from datetime import datetime           # Date parsing (expiry) + timestamp formatting
 
-from openpyxl import Workbook           # Excel writing for output workbook
+from openpyxl import Workbook, load_workbook  # Excel writing + template loading
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side  # Cell formatting
 from openpyxl.utils import get_column_letter  # Convert column index (1) → letter ('A')
+
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ REFACTOR NOTE: When splitting into multiple files, move the dotenv    │
+# │ import and config loading to a separate config.py module:             │
+# │   from dotenv import load_dotenv                                      │
+# │   load_dotenv()                                                       │
+# │   class Config:                                                       │
+# │       EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")                   │
+# │       ...                                                              │
+# └─────────────────────────────────────────────────────────────────────────┘
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -292,6 +304,439 @@ STATE_LIKE_VALUES = {
     "maharashtra", "gujarat", "karnataka", "tamil nadu",
     "haryana", "delhi", "u.p", "u.p.", "m.p", "m.p."
 }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EMAIL CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Hardcoded email settings for single-file deployment.
+#
+# ┌─────────────────────────────────────────────────────────────────────────┐
+# │ REFACTOR NOTE: When splitting into multiple files:                     │
+# │   1. Move this dict to config.py as a Config class                    │
+# │   2. Load values from .env file using python-dotenv                   │
+# │   3. Import: from config import Config                                 │
+# │   4. Replace EMAIL_CONFIG['key'] with Config.KEY                      │
+# │                                                                         │
+# │ .env file format:                                                       │
+# │   EMAIL_SENDER=abhishekwagh420@gmail.com                              │
+# │   EMAIL_PASSWORD=bomn ktfx jhct xexy                                  │
+# │   SMTP_SERVER=smtp.gmail.com                                           │
+# │   SMTP_PORT=587                                                        │
+# │   DEFAULT_RECIPIENT=abhishek.wagh@reneecosmetics.in                   │
+# │   CC_RECIPIENTS=email1@company.com,email2@company.com                 │
+# └─────────────────────────────────────────────────────────────────────────┘
+
+EMAIL_CONFIG = {
+    # Gmail SMTP credentials (uses App Password, not regular password)
+    # To generate: Google Account → Security → 2-Step Verification → App Passwords
+    'EMAIL_SENDER': 'abhishekwagh420@gmail.com',
+    'EMAIL_PASSWORD': 'bomn ktfx jhct xexy',
+
+    # SMTP server settings (Gmail defaults)
+    'SMTP_SERVER': 'smtp.gmail.com',
+    'SMTP_PORT': 587,
+
+    # Primary recipient (TO field)
+    'DEFAULT_RECIPIENT': 'abhishek.wagh@reneecosmetics.in',
+
+    # CC recipients (list of email addresses)
+    'CC_RECIPIENTS': [
+        'onlineb2b@reneecosmetics.in',
+        # 'aritra.barmanray@reneecosmetics.in',
+        # 'milan.nayak@reneecosmetics.in',
+        # 'ketan.jain@reneecosmetics.in'
+    ],
+}
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  INDIAN CURRENCY FORMATTER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def format_indian(number) -> str:
+    """
+    Format a number in Indian numbering system (lakhs, crores).
+
+    Examples:
+        1643      → "1,643"
+        123456    → "1,23,456"
+        1234567   → "12,34,567"
+        12345.67  → "12,345.67" (decimals preserved if float)
+
+    Args:
+        number: int or float to format
+
+    Returns:
+        Formatted string with Indian comma separators
+    """
+    try:
+        number = float(number)
+    except (ValueError, TypeError):
+        return str(number)
+
+    # Handle negative numbers
+    sign = '-' if number < 0 else ''
+    number = abs(number)
+
+    # Split integer and decimal parts
+    if number == int(number):
+        int_part = str(int(number))
+        dec_part = ''
+    else:
+        parts = f"{number:.2f}".split('.')
+        int_part = parts[0]
+        dec_part = '.' + parts[1]
+
+    # Apply Indian grouping: last 3 digits, then groups of 2
+    if len(int_part) <= 3:
+        return sign + int_part + dec_part
+
+    # Last 3 digits
+    result = int_part[-3:]
+    remaining = int_part[:-3]
+
+    # Group remaining digits in pairs from right
+    while remaining:
+        result = remaining[-2:] + ',' + result
+        remaining = remaining[:-2]
+
+    return sign + result + dec_part
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  EMAIL SERVICE
+# ═══════════════════════════════════════════════════════════════════════════════
+# Sends HTML email reports with GT Mass processing summary.
+# Uses Gmail SMTP with app password (configured in .env).
+# Structured for easy refactoring into a separate module later.
+
+class EmailService:
+    """Sends HTML email reports for GT Mass processing results."""
+
+    @staticmethod
+    def send_report(result: 'ProcessingResult', elapsed_str: str) -> Tuple[bool, str]:
+        """
+        Send an HTML email report with processing summary.
+
+        Args:
+            result     : ProcessingResult with all rows and warnings
+            elapsed_str: Time taken string (e.g., "0.85 seconds")
+
+        Returns:
+            (success: bool, error_message: str)
+        """
+        config = EMAIL_CONFIG
+        if not config['EMAIL_SENDER'] or not config['DEFAULT_RECIPIENT']:
+            return False, "Email not configured. Check .env file."
+
+        try:
+            # Build summary data
+            unique_sos = list({r.so_number: r for r in result.rows}.values())
+            total_order_qty = sum(r.qty for r in result.rows)
+            total_tester_qty = sum(r.tester_qty for r in result.rows)
+            total_items = len(result.rows)
+
+            # Build SKU summary
+            sku_groups = {}
+            for r in result.rows:
+                if r.item_no not in sku_groups:
+                    sku_groups[r.item_no] = {'desc': r.description, 'cat': r.category,
+                                              'order': 0, 'tester': 0}
+                sku_groups[r.item_no]['order'] += r.qty
+                sku_groups[r.item_no]['tester'] += r.tester_qty
+                if not sku_groups[r.item_no]['desc'] and r.description:
+                    sku_groups[r.item_no]['desc'] = r.description
+
+            # Sort SKUs by total demand descending
+            sorted_skus = sorted(sku_groups.items(),
+                                  key=lambda x: x[1]['order'] + x[1]['tester'],
+                                  reverse=True)
+
+            # Build SO-level aggregated quantities
+            so_groups_agg = {}
+            for r in result.rows:
+                if r.so_number not in so_groups_agg:
+                    so_groups_agg[r.so_number] = {'order': 0, 'tester': 0}
+                so_groups_agg[r.so_number]['order'] += r.qty
+                so_groups_agg[r.so_number]['tester'] += r.tester_qty
+
+            # Build HTML
+            html = EmailService._build_html(
+                unique_sos=unique_sos,
+                so_groups=so_groups_agg,
+                total_items=total_items,
+                total_order_qty=total_order_qty,
+                total_tester_qty=total_tester_qty,
+                sorted_skus=sorted_skus,
+                warnings=len(result.warned_files),
+                elapsed_str=elapsed_str,
+            )
+
+            # Create email
+            msg = EmailMessage()
+            msg['From'] = config['EMAIL_SENDER']
+            msg['To'] = config['DEFAULT_RECIPIENT']
+            if config['CC_RECIPIENTS']:
+                msg['Cc'] = ', '.join(config['CC_RECIPIENTS'])
+
+            timestamp = datetime.now().strftime('%d-%m-%Y %H:%M')
+            msg['Subject'] = (
+                f"📊 GT Mass SO Report: {len(unique_sos)} SOs, "
+                f"{total_items} Items — {timestamp}"
+            )
+
+            msg.set_content("Please view this email in an HTML-compatible client.")
+            msg.add_alternative(html, subtype='html')
+
+            # Send via SMTP
+            server = smtplib.SMTP(config['SMTP_SERVER'], config['SMTP_PORT'])
+            server.starttls()
+            server.login(config['EMAIL_SENDER'], config['EMAIL_PASSWORD'])
+
+            all_recipients = [config['DEFAULT_RECIPIENT']] + config['CC_RECIPIENTS']
+            server.send_message(msg, to_addrs=all_recipients)
+            server.quit()
+
+            logging.info(f"Email sent to {config['DEFAULT_RECIPIENT']} + {len(config['CC_RECIPIENTS'])} CC")
+            return True, ""
+
+        except Exception as e:
+            logging.error(f"Email send failed: {e}")
+            return False, str(e)
+
+    @staticmethod
+    @staticmethod
+    @staticmethod
+    def _build_html(unique_sos, so_groups, total_items, total_order_qty, total_tester_qty,
+                     sorted_skus, warnings, elapsed_str) -> str:
+        """Build the HTML email body — fully inline styles for Gmail/Outlook compatibility."""
+
+        total_qty = total_order_qty + total_tester_qty
+        timestamp = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+        unique_skus = len(sorted_skus)
+
+        # Colors
+        C_NAVY = '#1A237E'
+        C_GREEN = '#2E7D32'
+        C_ORANGE = '#E65100'
+        C_PURPLE = '#6A1B9A'
+        C_GOLD = '#FFD600'
+        C_GRAY = '#666666'
+        C_LTGRAY = '#f5f5f5'
+
+        # ── Start HTML — no <style> block, everything inline ──
+        html = f"""<html><body style="margin:0; padding:0; font-family:Arial,sans-serif; background:#f0f2f5;">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f2f5;">
+<tr><td align="center" style="padding:20px 10px;">
+<table width="800" cellpadding="0" cellspacing="0" style="background:#ffffff; border-radius:8px; overflow:hidden; border:1px solid #ddd;">
+
+<!-- ═══ HEADER ═══ -->
+<tr><td style="background:{C_NAVY}; padding:25px 30px; text-align:center;">
+    <table width="100%"><tr><td style="text-align:center;">
+        <p style="margin:0; font-size:22px; font-weight:bold; color:white;">📊 GT Mass — Sales Order Report</p>
+        <p style="margin:8px 0 0; font-size:12px; color:#9fa8da;">Generated: {timestamp} &nbsp;|&nbsp; Processing: {elapsed_str}</p>
+        <table style="margin:10px auto 0;"><tr><td style="background:#283593; padding:5px 15px; border-radius:15px;">
+            <span style="font-size:10px; color:#9fa8da; letter-spacing:1px;">⚡ AUTOMATED REPORT — GT MASS DUMP GENERATOR v2.1</span>
+        </td></tr></table>
+    </td></tr></table>
+</td></tr>
+
+<!-- ═══ COLOR BAR ═══ -->
+<tr><td style="height:4px; font-size:0;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td width="25%" style="background:{C_ORANGE}; height:4px;"></td>
+        <td width="25%" style="background:{C_GOLD}; height:4px;"></td>
+        <td width="25%" style="background:#00E676; height:4px;"></td>
+        <td width="25%" style="background:#2979FF; height:4px;"></td>
+    </tr></table>
+</td></tr>
+
+<!-- ═══ STAT BOXES ═══ -->
+<tr><td style="padding:0; border-bottom:1px solid #eee;">
+    <table width="100%" cellpadding="0" cellspacing="0">
+    <tr>
+        <td width="25%" style="text-align:center; padding:20px 10px; border-right:1px solid #f0f0f0;">
+            <p style="margin:0; font-size:32px; font-weight:bold; color:{C_NAVY};">{len(unique_sos)}</p>
+            <p style="margin:5px 0 0; font-size:10px; color:#999; text-transform:uppercase; letter-spacing:1px;">Sales Orders</p>
+            <table style="margin:8px auto 0;"><tr><td style="background:{C_NAVY}; height:3px; width:40px; border-radius:2px;"></td></tr></table>
+        </td>
+        <td width="25%" style="text-align:center; padding:20px 10px; border-right:1px solid #f0f0f0;">
+            <p style="margin:0; font-size:32px; font-weight:bold; color:{C_GREEN};">{format_indian(total_items)}</p>
+            <p style="margin:5px 0 0; font-size:10px; color:#999; text-transform:uppercase; letter-spacing:1px;">Line Items</p>
+            <table style="margin:8px auto 0;"><tr><td style="background:{C_GREEN}; height:3px; width:40px; border-radius:2px;"></td></tr></table>
+        </td>
+        <td width="25%" style="text-align:center; padding:20px 10px; border-right:1px solid #f0f0f0;">
+            <p style="margin:0; font-size:32px; font-weight:bold; color:{C_ORANGE};">{format_indian(total_order_qty)}</p>
+            <p style="margin:5px 0 0; font-size:10px; color:#999; text-transform:uppercase; letter-spacing:1px;">Order Qty</p>
+            <table style="margin:8px auto 0;"><tr><td style="background:{C_ORANGE}; height:3px; width:40px; border-radius:2px;"></td></tr></table>
+        </td>
+        <td width="25%" style="text-align:center; padding:20px 10px;">
+            <p style="margin:0; font-size:32px; font-weight:bold; color:{C_PURPLE};">{format_indian(total_tester_qty)}</p>
+            <p style="margin:5px 0 0; font-size:10px; color:#999; text-transform:uppercase; letter-spacing:1px;">Tester Qty</p>
+            <table style="margin:8px auto 0;"><tr><td style="background:{C_PURPLE}; height:3px; width:40px; border-radius:2px;"></td></tr></table>
+        </td>
+    </tr>
+    </table>
+</td></tr>
+
+<!-- ═══ SPACER ═══ -->
+<tr><td style="padding:12px 20px; background:#f8f9fa;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td width="33%" style="height:2px; background:#1A237E; font-size:0;">&nbsp;</td>
+        <td width="34%" style="height:2px; background:#2E7D32; font-size:0;">&nbsp;</td>
+        <td width="33%" style="height:2px; background:#E65100; font-size:0;">&nbsp;</td>
+    </tr></table>
+</td></tr>
+
+<!-- ═══ SO DETAILS HEADER ═══ -->
+<tr><td style="padding:14px 20px; font-weight:bold; font-size:14px; color:{C_NAVY}; border-left:5px solid {C_NAVY}; background:#E8EAF6;">
+    📋 Sales Order Details
+</td></tr>
+
+<!-- ═══ SO TABLE ═══ -->
+<tr><td style="padding:0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+<tr>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">SO Number</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">Distributor</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">City</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">State</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">Location</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">Order Qty</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">Tester Qty</th>
+    <th style="background:{C_NAVY}; color:white; padding:10px 8px; font-size:11px; text-transform:uppercase;">Total</th>
+</tr>
+"""
+
+        # SO data rows
+        for i, so_row in enumerate(unique_sos):
+            so_info = so_groups.get(so_row.so_number, {'order': 0, 'tester': 0})
+            order_q = so_info['order']
+            tester_q = so_info['tester']
+            bg = '#f9f9f9' if i % 2 == 1 else '#ffffff'
+            html += f'''<tr style="background:{bg};">
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee; font-weight:bold;">{so_row.so_number}</td>
+    <td style="padding:9px 8px; text-align:left; font-size:12px; border-bottom:1px solid #eee;">{so_row.distributor or "—"}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{so_row.city or "—"}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{so_row.state or "—"}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{so_row.location_code or "—"}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{format_indian(order_q)}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{format_indian(tester_q)}</td>
+    <td style="padding:9px 8px; text-align:center; font-size:12px; border-bottom:1px solid #eee; font-weight:bold;">{format_indian(order_q + tester_q)}</td>
+</tr>
+'''
+
+        # SO totals row
+        html += f'''<tr style="background:#E8EAF6; font-weight:bold;">
+    <td style="padding:10px 8px; text-align:center; font-size:12px;">TOTAL</td>
+    <td colspan="4" style="padding:10px 8px; text-align:left; font-size:12px;">{len(unique_sos)} Sales Orders</td>
+    <td style="padding:10px 8px; text-align:center; font-size:12px;">{format_indian(total_order_qty)}</td>
+    <td style="padding:10px 8px; text-align:center; font-size:12px;">{format_indian(total_tester_qty)}</td>
+    <td style="padding:10px 8px; text-align:center; font-size:12px;">{format_indian(total_qty)}</td>
+</tr></table>
+'''
+
+        # ── SKU DEMAND SECTION ──
+        html += f'''</td></tr>
+<tr><td style="padding:12px 20px; background:#f8f9fa;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td width="33%" style="height:2px; background:#1A237E; font-size:0;">&nbsp;</td>
+        <td width="34%" style="height:2px; background:#2E7D32; font-size:0;">&nbsp;</td>
+        <td width="33%" style="height:2px; background:#E65100; font-size:0;">&nbsp;</td>
+    </tr></table>
+</td></tr>
+<tr><td style="padding:14px 20px; font-weight:bold; font-size:14px; color:{C_GREEN}; border-left:5px solid {C_GREEN}; background:#E8F5E9;">
+    📦 SKU Demand Summary
+</td></tr>
+<tr><td style="padding:0;">
+<table width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+<tr>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">#</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">BC CODE</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">DESCRIPTION</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">CATEGORY</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">ORDER</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">TESTER</th>
+    <th style="background:{C_GREEN}; color:white; padding:10px 6px; font-size:11px;">TOTAL</th>
+</tr>
+'''
+
+        # SKU rows
+        for rank, (item_no, info) in enumerate(sorted_skus[:30], 1):
+            total = info['order'] + info['tester']
+            desc = info['desc'][:45] + '...' if len(info['desc']) > 45 else info['desc']
+            bg = '#f1f8e9' if rank % 2 == 0 else '#ffffff'
+            html += f'''<tr style="background:{bg};">
+    <td style="padding:8px 6px; text-align:center; font-size:12px; color:#999; border-bottom:1px solid #eee;">{rank}</td>
+    <td style="padding:8px 6px; text-align:center; font-size:12px; font-weight:bold; border-bottom:1px solid #eee;">{item_no}</td>
+    <td style="padding:8px 6px; text-align:left; font-size:12px; border-bottom:1px solid #eee;">{desc or "—"}</td>
+    <td style="padding:8px 6px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{info["cat"] or "—"}</td>
+    <td style="padding:8px 6px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{format_indian(info["order"])}</td>
+    <td style="padding:8px 6px; text-align:center; font-size:12px; border-bottom:1px solid #eee;">{format_indian(info["tester"])}</td>
+    <td style="padding:8px 6px; text-align:center; font-size:12px; font-weight:bold; border-bottom:1px solid #eee;">{format_indian(total)}</td>
+</tr>
+'''
+
+        if len(sorted_skus) > 30:
+            html += f'<tr><td colspan="7" style="padding:10px; text-align:center; color:#aaa; font-size:11px; font-style:italic;">... and {len(sorted_skus) - 30} more SKUs — see dump file for full list</td></tr>'
+
+        # Grand total
+        html += f'''<tr style="background:#E8F5E9; font-weight:bold;">
+    <td style="padding:10px 6px; text-align:center; font-size:12px;"></td>
+    <td style="padding:10px 6px; text-align:center; font-size:12px;">GRAND TOTAL</td>
+    <td style="padding:10px 6px; text-align:left; font-size:12px;">{unique_skus} unique SKUs</td>
+    <td style="padding:10px 6px; text-align:center; font-size:12px;"></td>
+    <td style="padding:10px 6px; text-align:center; font-size:12px;">{format_indian(total_order_qty)}</td>
+    <td style="padding:10px 6px; text-align:center; font-size:12px;">{format_indian(total_tester_qty)}</td>
+    <td style="padding:10px 6px; text-align:center; font-size:12px;">{format_indian(total_qty)}</td>
+</tr></table>
+'''
+
+        # ── FOOTER ──
+        html += f'''</td></tr>
+<tr><td style="padding:12px 20px; background:#f8f9fa;">
+    <table width="100%" cellpadding="0" cellspacing="0"><tr>
+        <td width="33%" style="height:2px; background:#1A237E; font-size:0;">&nbsp;</td>
+        <td width="34%" style="height:2px; background:#2E7D32; font-size:0;">&nbsp;</td>
+        <td width="33%" style="height:2px; background:#E65100; font-size:0;">&nbsp;</td>
+    </tr></table>
+</td></tr>
+<tr><td style="background:{C_NAVY}; padding:30px; text-align:center;">
+
+    <p style="margin:0 0 5px; font-size:16px; font-weight:bold; color:{C_GOLD}; letter-spacing:1px;">
+        ⚡ GT MASS DUMP GENERATOR v2.1
+    </p>
+    <p style="margin:0 0 18px; font-size:11px; color:#7986CB;">
+        Warehouse Automation Suite — One-click PO Intelligence
+    </p>
+
+    <table style="margin:0 auto; max-width:400px;"><tr><td style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.15); padding:18px; border-radius:10px; text-align:center;">
+        <p style="margin:0 0 3px; font-size:10px; color:#7986CB; text-transform:uppercase; letter-spacing:2px;">🚀 Engineered by</p>
+        <p style="margin:0 0 5px; font-size:18px; font-weight:bold; color:white;">Abhishek Wagh</p>
+        <p style="margin:0 0 3px; font-size:11px; color:#9FA8DA;">Warehouse & Distribution Automation</p>
+        <p style="margin:0; font-size:10px; color:#7986CB;">📧 abhishek.wagh@reneecosmetics.in</p>
+    </td></tr></table>
+
+    <table style="margin:15px auto 0; max-width:450px;"><tr><td style="background:rgba(255,255,255,0.05); padding:12px 20px; border-radius:8px; border-left:3px solid {C_GOLD}; text-align:left;">
+        <p style="margin:0; font-size:11px; font-style:italic; color:#C5CAE9;">
+            🏆 "Automation isn't just about saving time —
+            it's about building systems that <span style="color:{C_GOLD}; font-weight:bold;">sell while you sleep.</span>"
+        </p>
+    </td></tr></table>
+
+    <p style="margin:18px 0 0; font-size:9px; color:#5C6BC0;">
+        © 2026 RENEE Cosmetics Pvt. Ltd. | Warehouse Automation Division | Confidential
+    </p>
+
+</td></tr>
+</table>
+</td></tr></table>
+</body></html>'''
+
+        return html
+
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -524,11 +969,16 @@ class MetaExtractor:
         # ── Only scan the meta rows (above the header row) ──
         meta_df = raw_df.iloc[:header_row]
 
-        # Iterate via values for performance (avoiding overhead of Series creation per row)
-        for row_vals in meta_df.values:
-            # ── Column A/B scanning (Distributor, City, State) ──
-            label = str(row_vals[0]).strip().lower() if pd.notna(row_vals[0]) else ""
-            value = str(row_vals[1]).strip() if pd.notna(row_vals[1]) else ""
+        for _, row in meta_df.iterrows():
+
+            # ────────────────────────────────────────────────────
+            # LEFT SIDE: Col A (label) + Col B (value)
+            # ────────────────────────────────────────────────────
+            # Read label from column A (index 0)
+            label = str(row.iloc[0]).strip().lower() if pd.notna(row.iloc[0]) else ""
+            # Read value from column B (index 1)
+            value = str(row.iloc[1]).strip() if pd.notna(row.iloc[1]) else ""
+            # Clean up "nan" strings (pandas converts empty cells to NaN → str → "nan")
             if value.lower() in ("nan", ""):
                 value = ""
 
@@ -544,15 +994,18 @@ class MetaExtractor:
                 # We'll pick the last non-blank one later
                 state_values.append(value)
 
-            # ── Column G/I scanning (Location) ──
-            # Location label is typically at column index 6 ("Location")
-            # Location value is at column index 8 (e.g., "AHD")
-            for col_idx in range(min(len(row_vals) - 1, 10)):
-                cell_val = str(row_vals[col_idx]).strip().lower() if pd.notna(row_vals[col_idx]) else ""
+            # ────────────────────────────────────────────────────
+            # RIGHT SIDE: Scan Cols 0-9 for "PO Number", "Location"
+            # ────────────────────────────────────────────────────
+            # These labels are typically at Col G (index 6), values at Col I (index 8)
+            # But we scan broadly (cols 0-9) to handle slight layout variations
+            for col_idx in range(min(len(row) - 1, 10)):
+                cell_val = str(row.iloc[col_idx]).strip().lower() if pd.notna(row.iloc[col_idx]) else ""
+
+                # ── "Location" label → read value from next 1-2 columns ──
                 if cell_val == "location":
-                    # Look for value in the next available column(s)
-                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row_vals))):
-                        loc_val = row_vals[val_idx]
+                    for val_idx in range(col_idx + 1, min(col_idx + 3, len(row))):
+                        loc_val = row.iloc[val_idx]
                         if pd.notna(loc_val) and str(loc_val).strip() and str(loc_val).strip().lower() != 'nan':
                             location = str(loc_val).strip()
                             logging.info(f"Location found: '{location}'")
@@ -676,9 +1129,11 @@ class ExcelParser:
         # The header row is the one that contains BOTH 'BC Code' AND 'Order Qty'.
         # It's typically Row 6, but we scan to be safe.
         header_row = None
-        # Efficiently scan using enumeration on values to avoid Series generation overhead
         for i, row_vals in enumerate(raw_df.values):
+            # Convert all cell values to lowercase strings for matching
             row_values = [str(v).lower() for v in row_vals]
+            # Check: 'bc code' must be an exact cell value,
+            # 'order qty' can be a substring (handles "Order Qty (Retail)" etc.)
             if "bc code" in row_values and any("order qty" in v for v in row_values):
                 header_row = i
                 break
@@ -746,14 +1201,19 @@ class ExcelParser:
         # Loop through each data row and create OrderRow for items with qty > 0
         rows: List[OrderRow] = []
 
-        # Get indices for faster access over values
+        # Pre-compute column indices for faster access (avoid repeated lookups)
         bc_idx = df.columns.get_loc(bc_col)
         qty_idx = df.columns.get_loc(qty_col)
         tester_idx = df.columns.get_loc(tester_col) if tester_col is not None else None
+        ean_idx = df.columns.get_loc(ean_col) if ean_col is not None else None
+        cat_idx = df.columns.get_loc(cat_col) if cat_col is not None else None
+        desc_idx = df.columns.get_loc(desc_col) if desc_col is not None else None
 
-        # Iterate via values for performance (avoiding overhead of Series creation per row)
+        # Iterate through raw values (faster than df.iterrows() for large files)
         for row_vals in df.values:
+            # ── Read BC Code (Item No) ──
             bc_code = row_vals[bc_idx]
+            # Skip rows with no BC Code (blank/NaN = empty row or summary row)
             if pd.isna(bc_code):
                 continue
             # BC Code must be numeric (e.g., 200163). Skip non-numeric values
@@ -761,11 +1221,11 @@ class ExcelParser:
             try:
                 bc_code = int(bc_code)
             except (ValueError, TypeError):
-                # If BC Code is not numeric or convertible, skip the row
                 continue
 
-            qty = self._clean_qty(row_vals[qty_idx])
-            tester_qty = self._clean_qty(row_vals[tester_idx]) if tester_idx is not None else 0
+            # ── Read quantities ──
+            qty = self._clean_qty(row_vals[qty_idx])                                    # Order Qty
+            tester_qty = self._clean_qty(row_vals[tester_idx]) if tester_idx is not None else 0  # Tester Qty
 
             # Skip rows where BOTH order and tester are zero/blank
             # (no point creating a line for zero-quantity items)
@@ -968,16 +1428,8 @@ class DumpExporter:
 
     def export(self, result: ProcessingResult) -> Optional[Path]:
         """
-        Write the complete output Excel workbook.
-
-        Creates an 'output' folder in the current directory if it doesn't exist,
-        generates a timestamped filename, writes all 5 sheets, saves the file.
-
-        Args:
-            result: ProcessingResult with all rows, warnings, failed files
-
-        Returns:
-            Path to the generated file, or None if no data to export
+        Write the reference output Excel workbook (6 sheets).
+        D365 export is handled separately via export_d365().
         """
         # ── Show error popup for any files that failed to read ──
         if result.failed_files:
@@ -995,53 +1447,236 @@ class DumpExporter:
             )
             return None
 
-        # ── Prepare output file path ──
+        # ── Prepare output paths ──
         output_folder = Path("output")
-        output_folder.mkdir(exist_ok=True)  # Create 'output' folder if it doesn't exist
-        today = datetime.now().strftime("%d-%m-%Y_%H%M%S")  # Timestamp for unique filename
-        file_path = output_folder / f"gt_mass_dump_{today}.xlsx"
+        output_folder.mkdir(exist_ok=True)
+        today = datetime.now().strftime("%d-%m-%Y_%H%M%S")
+        ref_path = output_folder / f"gt_mass_dump_{today}.xlsx"
 
-        # ── Create workbook and write all sheets ──
+        # ── FILE 1: Our formatted reference workbook (6 sheets) ──
         wb = Workbook()
-        wb.remove(wb.active)  # Remove the default empty sheet ("Sheet")
+        wb.remove(wb.active)
+        self._write_headers_so(wb, result)     # Sheet 1: Headers (SO) — formatted
+        self._write_lines_so(wb, result)       # Sheet 2: Lines (SO) — formatted
+        self._write_sales_lines(wb, result)    # Sheet 3: Sales Lines — detailed flat list
+        self._write_sales_header(wb, result)   # Sheet 4: Sales Header — grouped summary
+        self._write_sku_summary(wb, result)    # Sheet 5: SKU Summary — overall demand pivot
+        self._write_warnings(wb, result)       # Sheet 6: Warnings (if any)
+        wb.save(str(ref_path))
+        logging.info(f"Reference output saved: {ref_path}")
 
-        self._write_headers_so(wb, result)     # Sheet 1: ERP SO header import
-        self._write_lines_so(wb, result)       # Sheet 2: ERP SO line import
-        self._write_sales_lines(wb, result)    # Sheet 3: Detailed reference list
-        self._write_sales_header(wb, result)   # Sheet 4: Grouped summary per SO
-        self._write_sku_summary(wb, result)    # Sheet 5: SKU-level pivot (overall demand)
-        self._write_warnings(wb, result)       # Sheet 6: Warnings (if any exist)
+        return ref_path
 
-        wb.save(str(file_path))
-        logging.info(f"Output saved: {file_path}")
-        return file_path
+    def export_d365(self, result: ProcessingResult, template_path: str) -> Optional[Path]:
+        """
+        Fill the D365 sample package template by replacing empty cells in
+        the pre-formatted rows with actual data values.
+
+        The template has pre-formatted empty rows (row 4+) with style indices.
+        We replace empty cells like <c r="A4" s="11"/> with filled cells like
+        <c r="A4" s="11" t="s"><v>28</v></c> (string ref) or
+        <c r="C4" s="11"><v>10000</v></c> (number).
+
+        This preserves ALL XML maps, table definitions, and formatting.
+        """
+        if not result.rows:
+            messagebox.showwarning("No Data", "No data to export. Generate the dump first.")
+            return None
+
+        try:
+            import shutil
+            import zipfile
+            import re as re_mod
+
+            # ── Prepare output path ──
+            output_folder = Path("output")
+            output_folder.mkdir(exist_ok=True)
+            today_ts = datetime.now().strftime("%d-%m-%Y_%H%M%S")
+            d365_path = output_folder / f"d365_import_{today_ts}.xlsx"
+
+            # Binary copy of template
+            shutil.copy2(template_path, str(d365_path))
+
+            today_str = datetime.now().strftime("%d-%m-%Y")
+
+            # ── Collect unique SOs ──
+            seen = set()
+            unique_sos = []
+            for row in result.rows:
+                if row.so_number not in seen:
+                    seen.add(row.so_number)
+                    unique_sos.append(row)
+
+            # ── Read ZIP contents ──
+            zip_contents = {}
+            with zipfile.ZipFile(str(d365_path), 'r') as zin:
+                for item in zin.namelist():
+                    zip_contents[item] = zin.read(item)
+
+            # ── Parse and extend sharedStrings.xml ──
+            ss_xml = zip_contents['xl/sharedStrings.xml'].decode('utf-8')
+            existing_strings = re_mod.findall(r'<t[^>]*>([^<]*)</t>', ss_xml)
+            string_map = {s: i for i, s in enumerate(existing_strings)}
+
+            # Collect all new strings we need
+            new_strings = {'Order', 'Item', 'B2B', today_str}
+            for row in unique_sos:
+                new_strings.add(row.so_number)
+                if row.location_code:
+                    new_strings.add(row.location_code)
+            for row in result.rows:
+                new_strings.add(row.so_number)
+                if row.location_code:
+                    new_strings.add(row.location_code)
+
+            # Add only strings not already in the shared strings table
+            next_idx = len(existing_strings)
+            for s in sorted(new_strings):
+                if s not in string_map:
+                    string_map[s] = next_idx
+                    next_idx += 1
+
+            # Rebuild sharedStrings.xml
+            total_count = next_idx
+            ss_items = [''] * total_count
+            for s, idx in string_map.items():
+                escaped = s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                ss_items[idx] = f'<si><t>{escaped}</t></si>'
+            new_ss_xml = (
+                '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
+                f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                f'count="{total_count}" uniqueCount="{total_count}">'
+                + ''.join(ss_items) + '</sst>'
+            )
+            zip_contents['xl/sharedStrings.xml'] = new_ss_xml.encode('utf-8')
+
+            # ── Helper: replace an empty cell with a filled one ──
+            def fill_cell(xml, col_letter, row_num, value, is_string=True):
+                """Replace <c r="A4" s="X"/> with <c r="A4" s="X" t="s"><v>IDX</v></c>"""
+                ref = f"{col_letter}{row_num}"
+                # Match the empty cell: <c r="A4" s="11"/>
+                pattern = f'<c r="{ref}" s="(\\d+)"\\s*/>'
+                if is_string:
+                    idx = string_map.get(str(value), 0)
+                    replacement = f'<c r="{ref}" s="\\1" t="s"><v>{idx}</v></c>'
+                else:
+                    replacement = f'<c r="{ref}" s="\\1"><v>{value}</v></c>'
+                xml = re_mod.sub(pattern, replacement, xml, count=1)
+                return xml
+
+            # ── Fill Sales Header (sheet1.xml) ──
+            sheet1 = zip_contents['xl/worksheets/sheet1.xml'].decode('utf-8')
+            for i, row in enumerate(unique_sos):
+                r = i + 4  # Data starts at row 4
+                sheet1 = fill_cell(sheet1, 'A', r, 'Order')
+                sheet1 = fill_cell(sheet1, 'B', r, row.so_number)
+                # C (Sell-to) and D (Ship-to) left empty
+                sheet1 = fill_cell(sheet1, 'E', r, today_str)
+                sheet1 = fill_cell(sheet1, 'F', r, today_str)
+                sheet1 = fill_cell(sheet1, 'G', r, today_str)
+                sheet1 = fill_cell(sheet1, 'H', r, today_str)
+                sheet1 = fill_cell(sheet1, 'I', r, today_str)
+                sheet1 = fill_cell(sheet1, 'J', r, row.so_number)
+                if row.location_code:
+                    sheet1 = fill_cell(sheet1, 'K', r, row.location_code)
+                sheet1 = fill_cell(sheet1, 'M', r, 'B2B')
+            zip_contents['xl/worksheets/sheet1.xml'] = sheet1.encode('utf-8')
+
+            # ── Fill Sales Line (sheet2.xml) ──
+            sheet2 = zip_contents['xl/worksheets/sheet2.xml'].decode('utf-8')
+            current_so = None
+            line_no = 0
+            for i, row in enumerate(result.rows):
+                if row.so_number != current_so:
+                    current_so = row.so_number
+                    line_no = 0
+                line_no += 10000
+                r = i + 4
+
+                sheet2 = fill_cell(sheet2, 'A', r, 'Order')
+                sheet2 = fill_cell(sheet2, 'B', r, row.so_number)
+                sheet2 = fill_cell(sheet2, 'C', r, line_no, is_string=False)
+                sheet2 = fill_cell(sheet2, 'D', r, 'Item')
+                # Item No as number
+                try:
+                    sheet2 = fill_cell(sheet2, 'E', r, int(row.item_no), is_string=False)
+                except (ValueError, TypeError):
+                    sheet2 = fill_cell(sheet2, 'E', r, row.item_no)
+                if row.location_code:
+                    sheet2 = fill_cell(sheet2, 'F', r, row.location_code)
+                sheet2 = fill_cell(sheet2, 'G', r, row.qty, is_string=False)
+                # H (Unit Price) left empty
+            zip_contents['xl/worksheets/sheet2.xml'] = sheet2.encode('utf-8')
+
+            # ── Remove unused empty rows and update table refs ──
+            # Sheet1: keep rows 1-3 (header) + rows 4 to 4+len(unique_sos)-1 (data)
+            # Remove all empty rows after the last data row
+            last_hdr_data = 3 + len(unique_sos)  # Last row with data in Sales Header
+            last_line_data = 3 + len(result.rows)  # Last row with data in Sales Line
+
+            # Remove empty rows from sheet1 (rows after last data row)
+            sheet1_clean = zip_contents['xl/worksheets/sheet1.xml'].decode('utf-8')
+            for r in range(last_hdr_data + 1, 37):  # Template has rows up to 36
+                # Remove entire <row r="N" ...>...</row> elements for empty rows
+                sheet1_clean = re_mod.sub(
+                    rf'<row r="{r}"[^>]*>.*?</row>',
+                    '', sheet1_clean, flags=re_mod.DOTALL
+                )
+            # Update dimension to match actual data
+            sheet1_clean = re_mod.sub(
+                r'<dimension ref="[^"]*"/>',
+                f'<dimension ref="A1:R{last_hdr_data}"/>',
+                sheet1_clean
+            )
+            zip_contents['xl/worksheets/sheet1.xml'] = sheet1_clean.encode('utf-8')
+
+            # Remove empty rows from sheet2 (rows after last data row)
+            sheet2_clean = zip_contents['xl/worksheets/sheet2.xml'].decode('utf-8')
+            for r in range(last_line_data + 1, 500):  # Template has rows up to ~473
+                sheet2_clean = re_mod.sub(
+                    rf'<row r="{r}"[^>]*>.*?</row>',
+                    '', sheet2_clean, flags=re_mod.DOTALL
+                )
+            sheet2_clean = re_mod.sub(
+                r'<dimension ref="[^"]*"/>',
+                f'<dimension ref="A1:H{last_line_data}"/>',
+                sheet2_clean
+            )
+            zip_contents['xl/worksheets/sheet2.xml'] = sheet2_clean.encode('utf-8')
+
+            # Update table refs to match actual data range (no empty rows)
+            t1_xml = zip_contents['xl/tables/table1.xml'].decode('utf-8')
+            t1_xml = re_mod.sub(r'ref="A3:[A-Z]+\d+"', f'ref="A3:R{last_hdr_data}"', t1_xml)
+            zip_contents['xl/tables/table1.xml'] = t1_xml.encode('utf-8')
+
+            t2_xml = zip_contents['xl/tables/table2.xml'].decode('utf-8')
+            t2_xml = re_mod.sub(r'ref="A3:[A-Z]+\d+"', f'ref="A3:H{last_line_data}"', t2_xml)
+            zip_contents['xl/tables/table2.xml'] = t2_xml.encode('utf-8')
+
+            # ── Write modified ZIP ──
+            with zipfile.ZipFile(str(d365_path), 'w', zipfile.ZIP_DEFLATED) as zout:
+                for name, data in zip_contents.items():
+                    zout.writestr(name, data)
+
+            logging.info(f"D365 export saved: {d365_path}")
+            logging.info(f"D365: {len(unique_sos)} SOs, {len(result.rows)} items")
+            return d365_path
+
+        except Exception as e:
+            logging.error(f"D365 export failed: {e}")
+            messagebox.showerror("D365 Export Error", f"Failed to create D365 export:\n{e}")
+            return None
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  FILE 1 SHEETS: Our formatted reference output
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _write_headers_so(self, wb, result: ProcessingResult):
         """
-        Sheet 1: 'Headers (SO)' — One row per unique SO number.
-
-        This sheet is imported into Business Central ERP as Sales Order headers.
-        Each row creates one Sales Order in the system.
-
-        Columns:
-            Document Type          = 'Order' (always — tells ERP this is a Sales Order)
-            No.                    = SO/GTM number (e.g., 'SO/GTM/6448')
-            Sell-to Customer No.   = EMPTY (filled manually in ERP — distributor code)
-            Ship-to Code           = EMPTY (filled manually in ERP)
-            Posting Date           = today's date (DD-MM-YYYY)
-            Order Date             = today's date
-            Document Date          = today's date
-            Invoice From Date      = today's date
-            Invoice To Date        = today's date
-            External Document No.  = same as No. (for cross-reference between systems)
-            Location Code          = mapped from file (e.g., 'PICK', 'DS_BL_OFF1')
-            Dimension Set ID       = EMPTY (ERP auto-fills)
-            Supply Type            = 'B2B' (always — Business-to-Business)
-            Columns 14-18          = EMPTY dimension placeholders (Brand, Channel, etc.)
+        Sheet 1: 'Headers (SO)' — Our formatted reference (navy blue headers, borders).
+        One row per unique SO number. NOT for ERP import — for human review.
         """
         ws = wb.create_sheet('Headers (SO)')
-
-        # Define all column headers matching the ERP import template
         headers = [
             'Document Type', 'No.', 'Sell-to Customer No.', 'Ship-to Code',
             'Posting Date', 'Order Date', 'Document Date',
@@ -1051,64 +1686,39 @@ class DumpExporter:
             'Brand Code (Dimension)', 'Channel Code (Dimension)',
             'Catagory (Dimension)', 'Geography Code (Dimension)'
         ]
-        # Write header row (row 1)
         for c, h in enumerate(headers, 1):
             self._hdr_cell(ws, 1, c, h)
 
-        # Today's date formatted for ERP (DD-MM-YYYY)
         today_str = datetime.now().strftime("%d-%m-%Y")
-
-        # ── Collect unique SO numbers while preserving file order ──
-        # If multiple files have the same SO number (shouldn't happen), we deduplicate.
-        # We keep the first row's meta data for each unique SO.
         seen = set()
         unique_sos = []
         for row in result.rows:
             if row.so_number not in seen:
                 seen.add(row.so_number)
-                unique_sos.append(row)  # Keep the first row's meta for this SO
+                unique_sos.append(row)
 
-        # ── Write one data row per unique SO number ──
-        r = 2  # Start at row 2 (row 1 is the header)
+        r = 2
         for row in unique_sos:
-            self._data_cell(ws, r, 1, 'Order')              # Document Type = always 'Order'
-            self._data_cell(ws, r, 2, row.so_number)         # No. = SO/GTM number
-            self._data_cell(ws, r, 3, '')                    # Sell-to Customer No. = EMPTY (manual)
-            self._data_cell(ws, r, 4, '')                    # Ship-to Code = EMPTY (manual)
-            self._data_cell(ws, r, 5, today_str)             # Posting Date = today
-            self._data_cell(ws, r, 6, today_str)             # Order Date = today
-            self._data_cell(ws, r, 7, today_str)             # Document Date = today
-            self._data_cell(ws, r, 8, today_str)             # Invoice From Date = today
-            self._data_cell(ws, r, 9, today_str)             # Invoice To Date = today
-            self._data_cell(ws, r, 10, row.so_number)        # External Document No. = same as No.
-            self._data_cell(ws, r, 11, row.location_code)    # Location Code = mapped (e.g., 'PICK')
-            self._data_cell(ws, r, 12, '')                   # Dimension Set ID = EMPTY
-            self._data_cell(ws, r, 13, 'B2B')                # Supply Type = always 'B2B'
-            # Columns 14-18: dimension placeholders left empty for ERP to fill
+            self._data_cell(ws, r, 1, 'Order')
+            self._data_cell(ws, r, 2, row.so_number)
+            self._data_cell(ws, r, 3, '')
+            self._data_cell(ws, r, 4, '')
+            self._data_cell(ws, r, 5, today_str)
+            self._data_cell(ws, r, 6, today_str)
+            self._data_cell(ws, r, 7, today_str)
+            self._data_cell(ws, r, 8, today_str)
+            self._data_cell(ws, r, 9, today_str)
+            self._data_cell(ws, r, 10, row.so_number)
+            self._data_cell(ws, r, 11, row.location_code)
+            self._data_cell(ws, r, 12, '')
+            self._data_cell(ws, r, 13, 'B2B')
             r += 1
-
         self._auto_width(ws)
 
     def _write_lines_so(self, wb, result: ProcessingResult):
         """
-        Sheet 2: 'Lines (SO)' — One row per ordered item.
-
-        This sheet is imported into Business Central ERP as Sales Order lines.
-        Each row adds one item line to its parent Sales Order.
-
-        Line No. increments by 10000 and RESETS per new SO number:
-            SO/GTM/6448: Line 10000, 20000, 30000...
-            SO/GTM/6449: Line 10000, 20000, 30000... (reset)
-
-        Columns:
-            Document Type  = 'Order' (always)
-            Document No.   = SO/GTM number (must match a header's No. value)
-            Line No.       = 10000, 20000, 30000... (ERP sequential line ID)
-            Type           = 'Item' (always — we're ordering stock items)
-            No.            = BC Code / Item No from ERP master data
-            Location Code  = mapped from file (same as header)
-            Quantity       = Order Qty ONLY (tester qty tracked in Sales Header sheet)
-            Unit Price     = EMPTY (ERP auto-fetches from item card pricing)
+        Sheet 2: 'Lines (SO)' — Our formatted reference.
+        One row per item, 10K line increments, resets per SO.
         """
         ws = wb.create_sheet('Lines (SO)')
         headers = ['Document Type', 'Document No.', 'Line No.', 'Type',
@@ -1116,30 +1726,28 @@ class DumpExporter:
         for c, h in enumerate(headers, 1):
             self._hdr_cell(ws, 1, c, h)
 
-        r = 2              # Current output row (starts at 2, after header)
-        current_so = None  # Track which SO we're on for line number reset
-        line_no = 0        # Line number counter (resets per SO)
-
+        r = 2
+        current_so = None
+        line_no = 0
         for row in result.rows:
-            # ── Reset line counter when SO number changes ──
-            # Each Sales Order has its own sequence: 10000, 20000, 30000...
             if row.so_number != current_so:
                 current_so = row.so_number
-                line_no = 0  # Reset to 0 (will become 10000 after increment below)
-
-            line_no += 10000  # Increment by 10K (Business Central ERP convention)
-
-            self._data_cell(ws, r, 1, 'Order')              # Document Type
-            self._data_cell(ws, r, 2, row.so_number)         # Document No. (links to header)
-            self._data_cell(ws, r, 3, line_no)               # Line No. (10K increments)
-            self._data_cell(ws, r, 4, 'Item')                # Type = always 'Item'
-            self._data_cell(ws, r, 5, row.item_no)           # No. = BC Code / Item No
-            self._data_cell(ws, r, 6, row.location_code)     # Location Code (mapped)
-            self._data_cell(ws, r, 7, row.qty)               # Quantity = Order Qty ONLY
-            self._data_cell(ws, r, 8, '')                    # Unit Price = EMPTY (ERP handles)
+                line_no = 0
+            line_no += 10000
+            self._data_cell(ws, r, 1, 'Order')
+            self._data_cell(ws, r, 2, row.so_number)
+            self._data_cell(ws, r, 3, line_no)
+            self._data_cell(ws, r, 4, 'Item')
+            self._data_cell(ws, r, 5, row.item_no)
+            self._data_cell(ws, r, 6, row.location_code)
+            self._data_cell(ws, r, 7, row.qty)
+            self._data_cell(ws, r, 8, '')
             r += 1
-
         self._auto_width(ws)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    #  FILE 2 SHEETS: D365 / Business Central ERP import (exact format)
+    # ─────────────────────────────────────────────────────────────────────────
 
     def _write_sales_lines(self, wb, result: ProcessingResult):
         """
@@ -1466,11 +2074,13 @@ class AutomationUI:
         self.automation = automation                   # Reference to the processing engine
         self.files: List[Path] = []                    # Currently selected file paths
         self.last_output_path: Optional[Path] = None   # Path to most recent output file
+        self.last_result: Optional[ProcessingResult] = None  # Last processing result (for D365 export)
+        self.last_elapsed: str = ""                            # Last processing time (for email report)
 
         # ── Create the main application window ──
         self.root = tk.Tk()
         self.root.title("GT Mass Dump Generator v2.1")
-        self.root.geometry("460x420")       # Fixed window size (width x height)
+        self.root.geometry("460x520")       # Fixed window size (width x height)
         self.root.resizable(False, False)   # Prevent window resizing
 
         # ── Title label (large bold text at top) ──
@@ -1515,6 +2125,18 @@ class AutomationUI:
         tk.Button(
             self.root, text="📋 Download PO Template", width=22,
             command=self._download_template
+        ).pack(pady=6)
+
+        # ── Button: Export D365 Package (fills template with data) ──
+        tk.Button(
+            self.root, text="📤 Export D365 Package", width=22,
+            command=self._export_d365
+        ).pack(pady=6)
+
+        # ── Button: Send Email Report ──
+        tk.Button(
+            self.root, text="📧 Send Email Report", width=22,
+            command=self._send_email
         ).pack(pady=6)
 
         # ── Status label (shows current state: waiting / processing / done) ──
@@ -1573,12 +2195,14 @@ class AutomationUI:
 
         # ── Process all selected files ──
         result = self.automation.process_files(self.files)
+        self.last_result = result  # Store for D365 export
         # ── Export to Excel ──
         output_path = self.automation.exporter.export(result)
 
         # ── Calculate elapsed time ──
         elapsed = time.time() - start_time
         elapsed_str = f"{elapsed:.2f} seconds"
+        self.last_elapsed = elapsed_str  # Store for email report
 
         # ── Collect stats for display ──
         failed = len(result.failed_files)    # Number of files that couldn't be read
@@ -1639,6 +2263,88 @@ class AutomationUI:
             messagebox.showwarning(
                 "File Not Found",
                 "The output file no longer exists.\nPlease generate a new dump."
+            )
+
+    def _export_d365(self):
+        """
+        Export D365 package: asks user for the D365 template file,
+        fills it with processed data, saves a copy, and offers to open it.
+
+        Flow:
+          1. Check that data exists (generate dump first)
+          2. Ask user to select the D365 sample package template
+          3. Fill the template copy with Sales Header + Sales Line data
+          4. Save to output/ folder
+          5. Ask if user wants to open the file
+        """
+        # Guard: must have processed data first
+        if not self.last_result or not self.last_result.rows:
+            messagebox.showwarning(
+                "No Data",
+                "Please generate the dump first before exporting D365 package."
+            )
+            return
+
+        # Ask user to select the D365 template file
+        template_path = filedialog.askopenfilename(
+            title="Select D365 Sample Package Template",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        if not template_path:
+            return  # User cancelled
+
+        # Export using the template
+        d365_path = self.automation.exporter.export_d365(self.last_result, template_path)
+
+        if d365_path:
+            sos = len(set(r.so_number for r in self.last_result.rows))
+            items = len(self.last_result.rows)
+
+            answer = messagebox.askyesno(
+                "D365 Package Exported",
+                f"D365 import file created!\n\n"
+                f"File   : {d365_path.name}\n"
+                f"SOs    : {sos}\n"
+                f"Items  : {items}\n\n"
+                f"Do you want to open the exported file?"
+            )
+            if answer:
+                open_file(d365_path)
+
+    def _send_email(self):
+        """
+        Send email report with processing summary, SO details, and SKU demand.
+
+        Requires:
+          - Data to have been generated first (last_result must exist)
+          - .env file with email credentials configured
+        """
+        if not self.last_result or not self.last_result.rows:
+            messagebox.showwarning(
+                "No Data",
+                "Please generate the dump first before sending email."
+            )
+            return
+
+        self.status.config(text="Status: Sending email...", fg="blue")
+        self.root.update()
+
+        success, error = EmailService.send_report(self.last_result, self.last_elapsed)
+
+        if success:
+            self.status.config(text="Status: Email sent ✓", fg="darkgreen")
+            messagebox.showinfo(
+                "Email Sent",
+                f"Report email sent successfully!\n\n"
+                f"To: {EMAIL_CONFIG['DEFAULT_RECIPIENT']}\n"
+                f"CC: {', '.join(EMAIL_CONFIG['CC_RECIPIENTS']) or 'none'}"
+            )
+        else:
+            self.status.config(text="Status: Email failed ✗", fg="red")
+            messagebox.showerror(
+                "Email Failed",
+                f"Could not send email:\n\n{error}\n\n"
+                f"Check your .env file and internet connection."
             )
 
     def _download_template(self):
