@@ -19,27 +19,43 @@
             box-shadow: 0 4px 12px rgba(0,0,0,0.05);
             border: 1px solid #eaeaea;
             text-align: center;
-            max-width: 500px;
+            max-width: 560px;
             width: 100%;
             margin: 0 auto;
         }
+
         .tool-container h2 {
             color: #000;
             margin-top: 0;
             margin-bottom: 5px;
         }
+
         .tool-container h4 {
             color: #666;
             margin-top: 0;
             margin-bottom: 30px;
             font-weight: 400;
         }
+
+        .version-tag {
+            display: inline-block;
+            background: #f0f0f0;
+            color: #888;
+            font-size: 11px;
+            padding: 2px 10px;
+            border-radius: 10px;
+            margin-bottom: 15px;
+            letter-spacing: 0.5px;
+        }
+
         .file-upload-wrapper {
             margin: 20px 0;
         }
+
         input[type="file"] {
             display: none;
         }
+
         .custom-file-upload {
             border: 1px dashed #ccc;
             display: block;
@@ -50,10 +66,12 @@
             color: #555;
             transition: all 0.2s;
         }
+
         .custom-file-upload:hover {
             background-color: #f0f0f0;
             border-color: #999;
         }
+
         .btn-generate {
             background-color: #000;
             color: white;
@@ -67,37 +85,121 @@
             margin-top: 20px;
             transition: background-color 0.2s;
         }
+
         .btn-generate:hover {
             background-color: #333;
         }
+
         .btn-generate:disabled {
             background-color: #ccc;
             cursor: not-allowed;
         }
+
         .status {
             margin-top: 20px;
             font-size: 14px;
-            color: #666;
-            padding: 10px;
+            padding: 12px 16px;
+            border-radius: 6px;
+            text-align: left;
+        }
+
+        .status.processing {
+            color: #1565c0;
+            background: #e3f2fd;
+            border: 1px solid #bbdefb;
+        }
+
+        .status.success {
+            color: #2e7d32;
+            background: #e8f5e9;
+            border: 1px solid #c8e6c9;
+        }
+
+        .status.error {
+            color: #c62828;
+            background: #ffebee;
+            border: 1px solid #ef9a9a;
+        }
+
+        .status.warning {
+            color: #e65100;
+            background: #fff3e0;
+            border: 1px solid #ffe0b2;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+            margin-top: 12px;
+        }
+
+        .stat-box {
+            background: #fafafa;
+            border: 1px solid #eee;
+            border-radius: 6px;
+            padding: 10px 8px;
+            text-align: center;
+        }
+
+        .stat-box .value {
+            font-size: 22px;
+            font-weight: 700;
+            color: #1a237e;
+        }
+
+        .stat-box .label {
+            font-size: 10px;
+            color: #999;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 2px;
+        }
+
+        .stat-box.failed .value { color: #c62828; }
+        .stat-box.warned .value { color: #e65100; }
+
+        .alert-line {
+            font-size: 13px;
+            margin-top: 8px;
+            padding: 6px 10px;
             border-radius: 4px;
-            background: #f9f9f9;
+        }
+
+        .alert-line.red {
+            background: #ffebee;
+            color: #c62828;
+            border-left: 3px solid #c62828;
+        }
+
+        .alert-line.orange {
+            background: #fff3e0;
+            color: #e65100;
+            border-left: 3px solid #e65100;
         }
     </style>
 
     <div class="tool-container">
         <div class="header">
+            <span class="version-tag">v2.4</span>
             <h2>GT Mass Dump Generator</h2>
-            <h4>Select offline excel files to merge and format</h4>
+            <h4>Upload GT-Mass / Everyday PO Excel files</h4>
         </div>
 
         <form id="uploadForm">
             {% csrf_token %}
             <div class="file-upload-wrapper">
                 <label for="fileInput" class="custom-file-upload">
-                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block; margin: 0 auto 10px;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                         style="display:block; margin: 0 auto 10px;">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="17 8 12 3 7 8"></polyline>
+                        <line x1="12" y1="3" x2="12" y2="15"></line>
+                    </svg>
                     Click to Select Excel Files
                 </label>
-                <input type="file" id="fileInput" name="files" accept=".xlsx, .xls" multiple required>
+                <input type="file" id="fileInput" name="files" accept=".xlsx,.xls,.xlsm" multiple required>
             </div>
 
             <div id="fileCount" style="font-size: 14px; font-weight: 500;">Selected Files: 0</div>
@@ -105,7 +207,9 @@
             <button type="submit" class="btn-generate" id="generateBtn">Generate Dump</button>
         </form>
 
-        <div class="status" id="statusMessage" style="display: none;"></div>
+        <div class="status" id="statusBox" style="display: none;"></div>
+        <div id="statsContainer" style="display: none;"></div>
+        <div id="alertsContainer"></div>
     </div>
 
     <script>
@@ -113,11 +217,17 @@
             const fileInput = document.getElementById('fileInput');
             const fileCount = document.getElementById('fileCount');
             const uploadForm = document.getElementById('uploadForm');
-            const statusMessage = document.getElementById('statusMessage');
+            const statusBox = document.getElementById('statusBox');
+            const statsContainer = document.getElementById('statsContainer');
+            const alertsContainer = document.getElementById('alertsContainer');
             const generateBtn = document.getElementById('generateBtn');
 
             fileInput.addEventListener('change', () => {
                 fileCount.textContent = `Selected Files: ${fileInput.files.length}`;
+                // Reset previous results
+                statusBox.style.display = 'none';
+                statsContainer.style.display = 'none';
+                alertsContainer.innerHTML = '';
             });
 
             uploadForm.addEventListener('submit', async (e) => {
@@ -128,8 +238,12 @@
                     return;
                 }
 
-                statusMessage.style.display = 'block';
-                statusMessage.textContent = "Processing files...";
+                // Show processing state
+                statusBox.style.display = 'block';
+                statusBox.className = 'status processing';
+                statusBox.textContent = '⏳ Processing files...';
+                statsContainer.style.display = 'none';
+                alertsContainer.innerHTML = '';
                 generateBtn.disabled = true;
 
                 const formData = new FormData(uploadForm);
@@ -139,52 +253,111 @@
                     const response = await fetch("{% url 'process_files' %}", {
                         method: 'POST',
                         body: formData,
-                        headers: {
-                            'X-CSRFToken': csrfToken
-                        }
+                        headers: { 'X-CSRFToken': csrfToken },
                     });
 
                     if (response.ok) {
+                        // ── Read summary from custom headers ──
+                        const attempted = response.headers.get('X-GT-Attempted') || '0';
+                        const rows = response.headers.get('X-GT-Rows') || '0';
+                        const sos = response.headers.get('X-GT-SOs') || '0';
+                        const failed = response.headers.get('X-GT-Failed') || '0';
+                        const warnings = response.headers.get('X-GT-Warnings') || '0';
+                        const missingLoc = response.headers.get('X-GT-MissingLocation') || '0';
+
+                        // ── Download the file ──
                         const blob = await response.blob();
                         const disposition = response.headers.get('Content-Disposition');
                         let filename = 'gt_mass_dump.xlsx';
 
-                        if (disposition && disposition.indexOf('filename=') !== -1) {
-                            const filenameRegex = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/;
-                            const matches = filenameRegex.exec(disposition);
-                            if (matches != null && matches[1]) {
-                                filename = matches[1].replace(/['"]/g, '');
-                            }
+                        if (disposition && disposition.includes('filename=')) {
+                            const match = /filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/.exec(disposition);
+                            if (match) filename = match[1].replace(/['"]/g, '');
                         }
 
-                        const downloadUrl = window.URL.createObjectURL(blob);
+                        const url = window.URL.createObjectURL(blob);
                         const a = document.createElement('a');
-                        a.href = downloadUrl;
+                        a.href = url;
                         a.download = filename;
                         document.body.appendChild(a);
                         a.click();
                         a.remove();
-                        window.URL.revokeObjectURL(downloadUrl);
+                        window.URL.revokeObjectURL(url);
 
-                        statusMessage.textContent = "Success! Dump generated.";
-                        statusMessage.style.color = "#28a745";
-                        statusMessage.style.background = "#d4edda";
-                        statusMessage.style.border = "1px solid #c3e6cb";
+                        // ── Show success status ──
+                        const hasIssues = parseInt(failed) > 0 || parseInt(warnings) > 0;
+                        statusBox.className = hasIssues ? 'status warning' : 'status success';
+                        statusBox.textContent = hasIssues
+                            ? `✅ Dump generated with issues — check the Warnings sheet`
+                            : `✅ Dump generated successfully!`;
+
+                        // ── Show stats grid ──
+                        statsContainer.style.display = 'block';
+                        statsContainer.innerHTML = `
+                            <div class="stats-grid">
+                                <div class="stat-box">
+                                    <div class="value">${attempted}</div>
+                                    <div class="label">Files</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="value">${sos}</div>
+                                    <div class="label">Sales Orders</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="value">${rows}</div>
+                                    <div class="label">Line Items</div>
+                                </div>
+                                ${parseInt(failed) > 0 ? `
+                                <div class="stat-box failed">
+                                    <div class="value">${failed}</div>
+                                    <div class="label">Failed</div>
+                                </div>` : ''}
+                                ${parseInt(warnings) > 0 ? `
+                                <div class="stat-box warned">
+                                    <div class="value">${warnings}</div>
+                                    <div class="label">Warnings</div>
+                                </div>` : ''}
+                            </div>
+                        `;
+
+                        // ── Show alerts for critical issues ──
+                        if (parseInt(failed) > 0) {
+                            alertsContainer.innerHTML += `
+                                <div class="alert-line red">
+                                    🚫 ${failed} file(s) failed template validation — see File → SO Mapping sheet
+                                </div>`;
+                        }
+                        if (parseInt(missingLoc) > 0) {
+                            alertsContainer.innerHTML += `
+                                <div class="alert-line orange">
+                                    🔴 ${missingLoc} SO(s) have empty Location Code — fill manually in output
+                                </div>`;
+                        }
+
                     } else {
+                        // ── Error response ──
                         const errorData = await response.json();
-                        alert(errorData.error || "An error occurred");
-                        statusMessage.textContent = "Error occurred.";
-                        statusMessage.style.color = "#dc3545";
-                        statusMessage.style.background = "#f8d7da";
-                        statusMessage.style.border = "1px solid #f5c6cb";
+                        statusBox.className = 'status error';
+
+                        if (errorData.details && errorData.details.failures) {
+                            let msg = `❌ ${errorData.error}\n\n`;
+                            errorData.details.failures.forEach(f => {
+                                msg += `• ${f.file}: ${f.reason}\n`;
+                            });
+                            statusBox.innerHTML = `<strong>❌ ${errorData.error}</strong>`;
+
+                            alertsContainer.innerHTML = errorData.details.failures.map(f =>
+                                `<div class="alert-line red">• ${f.file}: ${f.reason.substring(0, 80)}${f.reason.length > 80 ? '...' : ''}</div>`
+                            ).join('');
+                        } else {
+                            statusBox.textContent = `❌ ${errorData.error || 'An error occurred'}`;
+                        }
                     }
+
                 } catch (error) {
                     console.error('Error:', error);
-                    alert("Failed to process files");
-                    statusMessage.textContent = "Error processing files.";
-                    statusMessage.style.color = "#dc3545";
-                    statusMessage.style.background = "#f8d7da";
-                    statusMessage.style.border = "1px solid #f5c6cb";
+                    statusBox.className = 'status error';
+                    statusBox.textContent = '❌ Network error — check your connection';
                 } finally {
                     generateBtn.disabled = false;
                 }
