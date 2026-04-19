@@ -10,3 +10,7 @@ dist
 output_parsed
 po_output
 staticfiles
+*Calculation Data
+*output_online
+db.sqlite3
+*.log

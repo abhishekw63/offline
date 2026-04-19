@@ -100,10 +100,43 @@ class MarketplaceEngine:
         )
 
         # ── Read file ───────────────────────────────────────────────────
+        # v1.4.2: All marketplace punch files carry their data on 'Sheet1'.
+        # Other sheets in the workbook are user-side pivots / manual calc
+        # / sidecars that must NOT be read by the script. Previously we
+        # defaulted to pandas' "first sheet" behavior which silently
+        # latched onto Sheet2/Sheet4 when a pivot sheet came first —
+        # that's now fixed across the board.
+        #
+        # If 'Sheet1' doesn't exist (highly unusual), we fall back to the
+        # first sheet and log a warning so the user can spot the issue
+        # rather than getting a cryptic KeyError downstream.
         try:
-            df = pd.read_excel(filepath, header=0)
+            available_sheets = pd.ExcelFile(filepath).sheet_names
+        except Exception as e:  # noqa: BLE001
+            result.warnings.append((
+                '', '', f"Cannot open file: {e}"
+            ))
+            return result
+
+        if 'Sheet1' in available_sheets:
+            sheet_to_read = 'Sheet1'
+        else:
+            sheet_to_read = available_sheets[0]
+            result.warnings.append((
+                '', '',
+                f"'Sheet1' not found in file — falling back to "
+                f"'{sheet_to_read}'. Available sheets: {available_sheets}"
+            ))
+            logging.warning("'Sheet1' missing; reading '%s' instead",
+                             sheet_to_read)
+
+        try:
+            df = pd.read_excel(filepath, sheet_name=sheet_to_read, header=0)
         except Exception as e:  # noqa: BLE001 — we want to surface ANY read error
-            result.warnings.append(('', '', f"Cannot read file: {e}"))
+            result.warnings.append((
+                '', '',
+                f"Cannot read sheet {sheet_to_read!r}: {e}"
+            ))
             return result
 
         logging.info("Read %d rows from %s",

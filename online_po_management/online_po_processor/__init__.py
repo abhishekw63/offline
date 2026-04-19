@@ -45,7 +45,7 @@ convenience and to mirror what the legacy single-file module exported:
     ... )
 """
 
-__version__ = "1.4.0"
+__version__ = "1.4.3"
 __all__ = [
     "__version__",
     # Re-exports for code that used to ``import standalone_po_processing as opp``

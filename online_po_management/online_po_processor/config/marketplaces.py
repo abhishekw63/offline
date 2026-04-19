@@ -144,6 +144,62 @@ MARKETPLACE_CONFIGS: Dict[str, Dict[str, Any]] = {
         ],
     },
 
+    # ────────────────────────────────────────────────────────────────────
+    # Blink  (a.k.a. Blinkit — Blink Commerce Private Limited, "BCPL".
+    # The dropdown and party_name both use "Blink" to match what's in
+    # the Ship-To B2B registry — mapping lookups filter on exactly that
+    # string, so the config must agree with the sheet character-for-
+    # character.)
+    #
+    # Real Blink files carry line data on 'Sheet1' (same as all other
+    # marketplaces — see note in engine.marketplace_engine). They may
+    # also ship pivot / sidecar sheets (Sheet2, Sheet4) with the user's
+    # own reference data; those are intentionally ignored by the engine.
+    #
+    # Columns on Sheet1 (25 native):
+    #   po_number | facility_name | manufacturer_name |
+    #   entity_vendor_legal_name | vendor_name | order_date |
+    #   appointment_date | expiry_date | po_state | item_id | name |
+    #   uom_text | upc | units_ordered | remaining_quantity |
+    #   landing_rate | cost_price | margin_percentage | cess_value |
+    #   sgst_value | igst_value | cgst_value | tax_value |
+    #   total_amount | mrp
+    #
+    # Key specifics:
+    #   • No 'Item no' column → resolve from 'upc' (EAN) via master lookup.
+    #   • 'margin_percentage' = 30 is Blink's margin → ours is 70%.
+    #   • 'cost_price' is POST-GST (landing ÷ 1.18), compare_basis='cost'.
+    #   • 'landing_rate' is pre-GST (MRP × 70%), present but not used for
+    #     validation — could be added as ref_fob_col if reference diff is
+    #     wanted later.
+    #
+    # 'Blink RO' (reverse-order / return entity) will be added as a
+    # sibling entry once we have a sample file.
+    # ────────────────────────────────────────────────────────────────────
+    'Blink': {
+        'party_name': 'Blink',               # Must match 'Party' in mapping sheet
+        'po_col': 'po_number',               # [REQUIRED] int64 (e.g. 1723710027417)
+        'loc_col': 'facility_name',          # [REQUIRED] e.g. 'Pune P2 - Feeder Warehouse'
+        'qty_col': 'units_ordered',          # [REQUIRED]
+        'item_resolution': 'from_ean',
+        'ean_col': 'upc',                    # [REQUIRED in this mode]
+        'price_col': None,                   # WMS computes
+        'fob_col': 'cost_price',             # [VALIDATION] post-GST
+        'default_margin': 70,                # 100 - Blink's margin_percentage(30)
+        'compare_basis': 'cost',             # cost_price ≈ MRP × 70% ÷ 1.18
+        'compare_label': 'Cost',
+        'template_headers': [
+            'po_number', 'facility_name', 'manufacturer_name',
+            'entity_vendor_legal_name', 'vendor_name',
+            'order_date', 'appointment_date', 'expiry_date', 'po_state',
+            'item_id', 'name', 'uom_text', 'upc',
+            'units_ordered', 'remaining_quantity',
+            'landing_rate', 'cost_price', 'margin_percentage',
+            'cess_value', 'sgst_value', 'igst_value', 'cgst_value',
+            'tax_value', 'total_amount', 'mrp',
+        ],
+    },
+
     # ┌─────────────────────────────────────────────────────────────────┐
     # │ ADD NEW MARKETPLACES HERE                                       │
     # │                                                                 │
