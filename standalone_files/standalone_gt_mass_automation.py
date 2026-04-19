@@ -294,8 +294,11 @@ EMAIL_CONFIG = {
     'CC_RECIPIENTS': [
         'offlineb2b@reneecosmetics.in',
         'kirpalsinh.bihola@reneecosmetics.in',
+        'gtmassaccounts@reneecosmetics.in',
         'aritra.barmanray@reneecosmetics.in',
         'milan.nayak@reneecosmetics.in',
+        'aashutosh.joshi@reneecosmetics.in',
+        'ketan.jain@reneecosmetics.in'
     ],
 }
 
