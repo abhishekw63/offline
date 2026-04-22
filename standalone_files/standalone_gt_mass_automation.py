@@ -1411,6 +1411,15 @@ class EmailBuilder:
     <table style="margin:15px auto 0;max-width:450px;"><tr><td style="background:rgba(255,255,255,0.05);padding:12px 20px;border-radius:8px;border-left:3px solid {C.GOLD};text-align:left;">
         <p style="margin:0;font-size:11px;font-style:italic;color:#C5CAE9;">🏆 "Automation isn't just about saving time — it's about building systems that <span style="color:{C.GOLD};font-weight:bold;">sell while you sleep.</span>"</p>
     </td></tr></table>
+    <table style="margin:18px auto 0;max-width:550px;"><tr><td style="background:rgba(255,255,255,0.06);padding:16px 20px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);text-align:left;">
+        <p style="margin:0 0 8px;font-size:11px;font-weight:bold;color:#FFD600;">📌 Please Note</p>
+        <p style="margin:0 0 8px;font-size:10px;color:#B0BEC5;line-height:1.6;">This is an auto-generated report by GT Mass Dump Generator. The Sales Orders listed above have been updated in the order tracker and uploaded to <span style="color:white;font-weight:bold;">Dynamics 365 Business Central</span> — they are ready for processing and dispatch.</p>
+        <p style="margin:0 0 4px;font-size:10px;color:#B0BEC5;line-height:1.6;">This report helps you to:</p>
+        <p style="margin:0 0 2px;font-size:10px;color:#9FA8DA;line-height:1.5;">&nbsp;&nbsp;• Analyse demanded quantities and order counts across distributors</p>
+        <p style="margin:0 0 2px;font-size:10px;color:#9FA8DA;line-height:1.5;">&nbsp;&nbsp;• Track SKU-wise demand for inventory planning and stock allocation</p>
+        <p style="margin:0 0 8px;font-size:10px;color:#9FA8DA;line-height:1.5;">&nbsp;&nbsp;• Verify SO numbers and location codes before dispatch</p>
+        <p style="margin:0;font-size:10px;color:#78909C;line-height:1.5;">For any discrepancies or corrections, please contact the <span style="color:#9FA8DA;">Order Management team</span>.</p>
+    </td></tr></table>
     <p style="margin:18px 0 0;font-size:9px;color:#5C6BC0;">© 2026 RENEE Cosmetics Pvt. Ltd. | Warehouse Automation Division | Confidential</p>
 </td></tr></table></td></tr></table></body></html>'''
 
@@ -1807,18 +1816,27 @@ class DumpExporter:
 
             zip_contents['xl/worksheets/sheet2.xml'] = s2.encode('utf-8')
 
-            # ── Remove unused rows & update dimension/table refs ──
+            # ── Remove ALL unused rows & update dimension/table refs ──
+            # FIX: Uses callback to remove ALL rows beyond last data row.
+            # Previously used hardcoded range(37) and range(500) which left
+            # hundreds of blank pre-formatted rows in the D365 package.
             last_hdr = 3 + len(unique_sos)
             last_line = 3 + len(result.rows)
 
+            def _remove_excess_rows(xml_str, max_row):
+                """Remove all <row r="N"> elements where N > max_row."""
+                def _replacer(m):
+                    row_num = int(m.group(1))
+                    if row_num > max_row:
+                        return ''
+                    return m.group(0)
+                return re_mod.sub(
+                    r'<row r="(\d+)"[^>]*>.*?</row>',
+                    _replacer, xml_str, flags=re_mod.DOTALL)
+
+            # Clean Sales Header (sheet1) — remove ALL rows after last SO
             s1_clean = zip_contents['xl/worksheets/sheet1.xml'].decode('utf-8')
-            for r in range(last_hdr + 1, 37):
-                s1_clean = re_mod.sub(
-                    rf'<row r="{r}"[^>]*>.*?</row>',
-                    '',
-                    s1_clean,
-                    flags=re_mod.DOTALL,
-                )
+            s1_clean = _remove_excess_rows(s1_clean, last_hdr)
             s1_clean = re_mod.sub(
                 r'<dimension ref="[^"]*"/>',
                 f'<dimension ref="A1:R{last_hdr}"/>',
@@ -1826,14 +1844,9 @@ class DumpExporter:
             )
             zip_contents['xl/worksheets/sheet1.xml'] = s1_clean.encode('utf-8')
 
+            # Clean Sales Line (sheet2) — remove ALL rows after last item
             s2_clean = zip_contents['xl/worksheets/sheet2.xml'].decode('utf-8')
-            for r in range(last_line + 1, 500):
-                s2_clean = re_mod.sub(
-                    rf'<row r="{r}"[^>]*>.*?</row>',
-                    '',
-                    s2_clean,
-                    flags=re_mod.DOTALL,
-                )
+            s2_clean = _remove_excess_rows(s2_clean, last_line)
             s2_clean = re_mod.sub(
                 r'<dimension ref="[^"]*"/>',
                 f'<dimension ref="A1:H{last_line}"/>',
