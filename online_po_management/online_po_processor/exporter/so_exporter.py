@@ -112,7 +112,23 @@ class SOExporter:
         Compute the full output path and ensure the parent folder exists.
 
         Prefers ``<punch-dir>/output/`` so each batch's output lives
-        next to the input it came from.
+        next to the input it came from. For v1.7.0 multi-file batches,
+        the "punch dir" is the parent of the FIRST file (typical case:
+        all the files in a Reliance batch live in the same folder, so
+        first-file's parent is the right destination).
+
+        Filename conventions:
+            * Single-file run:
+                ``<marketplace>_so_<DD-MM-YYYY>_<HHMMSS>.xlsx``
+                e.g. ``reliance_so_22-04-2026_154523.xlsx``
+            * Multi-file batch (v1.7.0, Reliance only):
+                ``<marketplace>_<N>PO_<DD-MM-YYYY>_<HHMMSS>.xlsx``
+                e.g. ``reliance_5PO_22-04-2026_154523.xlsx``
+              The count makes it obvious at a glance that this output
+              covers multiple POs without forcing the user to open
+              the workbook to find out.
+
+        The timestamp means repeat runs never clobber prior outputs.
         """
         if result.input_file_path:
             output_folder = Path(result.input_file_path).parent / 'output'
@@ -126,4 +142,12 @@ class SOExporter:
 
         timestamp = datetime.now().strftime('%d-%m-%Y_%H%M%S')
         marketplace_slug = result.marketplace.lower().replace(' ', '_')
-        return output_folder / f'{marketplace_slug}_so_{timestamp}.xlsx'
+
+        # v1.7.0: multi-file batches get a count-based filename so
+        # the batch size is visible without opening the workbook.
+        n_files = getattr(result, 'input_files_count', 1) or 1
+        if n_files > 1:
+            stem = f'{marketplace_slug}_{n_files}PO_{timestamp}.xlsx'
+        else:
+            stem = f'{marketplace_slug}_so_{timestamp}.xlsx'
+        return output_folder / stem

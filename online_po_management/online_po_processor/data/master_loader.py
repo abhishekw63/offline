@@ -14,6 +14,11 @@ The master is the source of truth for:
   the user can read what each item actually is at a glance.
 * ``No.`` (Item No) — the canonical ERP code resolved when the
   marketplace only provides an EAN.
+* ``HSN/SAC Code`` — Optional (v1.6.0). Used for HSN cross-checking
+  when the marketplace punch file also carries an HSN column and the
+  marketplace's config has ``hsn_col`` set. Missing column is
+  tolerated — those rows get reported as NOT_IN_MASTER for the HSN
+  check.
 
 The static helpers ``calc_cost_price`` and ``calc_landing_price`` are
 exposed as classmethods so the engine can call them without holding a
@@ -72,11 +77,32 @@ class MasterLoader:
             mrp = r.get('Mrp')
             item_no = str(r['No.']).strip()
 
+            # v1.6.0: HSN/SAC Code is optional in the master file —
+            # only Reliance (so far) does HSN cross-checking, and the
+            # master may not have the column at all if the customer
+            # hasn't added it yet. Missing column or blank cell →
+            # empty string, which the engine treats as "no master
+            # HSN known". The HSN cross-check then reports
+            # NOT_IN_MASTER for those rows so the user knows to
+            # update the master.
+            hsn_raw = r.get('HSN/SAC Code')
+            hsn = ''
+            if hsn_raw is not None and pd.notna(hsn_raw):
+                # Master HSNs sometimes come in as floats (e.g.
+                # 33049990.0) via Excel's number formatting. Strip
+                # any trailing .0 so comparisons against the punch
+                # file's string HSN don't mis-match.
+                try:
+                    hsn = str(int(float(hsn_raw)))
+                except (ValueError, TypeError):
+                    hsn = str(hsn_raw).strip()
+
             entry = {
                 'item_no': item_no,
                 'mrp': mrp,
                 'gst_code': gst,
                 'description': desc,
+                'hsn': hsn,
             }
 
             # Index by GTIN. The GTIN is the marketplace-facing identifier,

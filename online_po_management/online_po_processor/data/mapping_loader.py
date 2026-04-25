@@ -131,6 +131,28 @@ class MappingLoader:
                     'ship_to': ship_to,
                 }
 
+        # v1.8.1: warn if two entries would collide under the normalized
+        # lookup. This can happen if someone typed the same location
+        # twice with different casing/spacing pointing to different
+        # ship-to codes — in that case the behavior depends on dict
+        # insertion order which is fragile.
+        norm_collisions: Dict[str, List[str]] = {}
+        for k in self.mappings:
+            n = self._normalize(k)
+            norm_collisions.setdefault(n, []).append(k)
+        for n, originals in norm_collisions.items():
+            if len(originals) > 1:
+                logs.append(('', '',
+                             f"Mapping: {len(originals)} rows collide "
+                             f"under normalized lookup: {originals!r}. "
+                             f"Only one will be used per lookup — ensure "
+                             f"rows in 'Ship-To B2B' for '{party_name}' "
+                             f"are spelled consistently."))
+                logging.warning(
+                    "Mapping collision on normalized key %r: %r",
+                    n, originals,
+                )
+
         self.total_loaded = len(self.mappings)
         logging.info("Mapping: Loaded %d locations for '%s'",
                      self.total_loaded, party_name)
@@ -138,16 +160,43 @@ class MappingLoader:
 
     # ── Lookup ─────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _normalize(s: str) -> str:
+        """
+        Canonicalize a location string for fuzzy comparison.
+
+        Applies: lowercase, strip edges, collapse internal whitespace
+        (so ``'Farukhnagar  (Reliance)'`` with a double space matches
+        ``'FARUKHNAGAR (Reliance)'`` with a single space). Does NOT
+        remove punctuation — parentheses and hyphens are still part
+        of the semantic identity (``'Reliance Retail Limited-Nagpur'``
+        is distinct from ``'Reliance Retail Limited-Nagpur_1'``).
+
+        v1.8.1: added to absorb the whitespace-drift bug we observed
+        in real Reliance dumps where the same location shipped as
+        both ``'Farukhnagar (Reliance)'`` (single space) and
+        ``'Farukhnagar  (Reliance)'`` (double space) across batches.
+        """
+        if not s:
+            return ''
+        return ' '.join(str(s).split()).lower()
+
     def lookup(self, location: str) -> Optional[Dict[str, str]]:
         """
         Find the ERP codes for a delivery location string.
 
         Three-tier match::
 
-            1. Exact            (preferred — no ambiguity)
-            2. Case-insensitive (handles "Bilaspur" vs "bilaspur")
-            3. Substring        (handles "Bilaspur Warehouse - Gurgaon"
-                                 vs canonical "Bilaspur")
+            1. Exact                    (preferred — no ambiguity)
+            2. Case + whitespace normal (handles "Bilaspur" vs "bilaspur",
+                                         and "Foo  Bar" vs "Foo Bar")
+            3. Substring                (handles "Bilaspur Warehouse - Gurgaon"
+                                         vs canonical "Bilaspur")
+
+        v1.8.1 changes tier 2 from case-only to case+whitespace —
+        Reliance ships double-spaced location labels intermittently
+        which used to drop to tier 3 substring matching with lower
+        confidence.
 
         On a successful match the returned dict includes ``matched_key``
         — the canonical mapping key actually used. The GUI's Summary
@@ -169,13 +218,22 @@ class MappingLoader:
         if loc_clean in self.mappings:
             return {**self.mappings[loc_clean], 'matched_key': loc_clean}
 
-        # 2. Case-insensitive match
-        loc_lower = loc_clean.lower()
+        # 2. Case-insensitive + whitespace-normalized match (v1.8.1).
+        # Build a normalized lookup on first call (cheap — 7-30 entries
+        # typical) and stash it. We rebuild whenever mappings change;
+        # since this is only populated in load(), once is enough.
+        loc_norm = self._normalize(loc_clean)
         for key, val in self.mappings.items():
-            if key.lower() == loc_lower:
+            if self._normalize(key) == loc_norm:
+                if key != loc_clean:
+                    logging.info(
+                        "Mapping: Normalized match '%s' → '%s'",
+                        loc_clean, key,
+                    )
                 return {**val, 'matched_key': key}
 
         # 3. Substring match (lossy — log it so a misuse is visible)
+        loc_lower = loc_clean.lower()
         for key, val in self.mappings.items():
             key_lower = key.lower()
             if loc_lower in key_lower or key_lower in loc_lower:

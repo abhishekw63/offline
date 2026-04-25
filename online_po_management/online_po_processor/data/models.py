@@ -63,6 +63,23 @@ class SORow:
     # Pass-through input
     unit_price: Optional[float] = None
 
+    # v1.5.1: Marketplace-native row amount.
+    # Some marketplaces (Blink, RK) report a per-row monetary value on
+    # the punch file itself — this is the figure the marketplace will
+    # invoice or settle for. We surface it here so the email report can
+    # sum it for the Amount stat in the headline grid.
+    #
+    # Source column is declared per-marketplace via ``amount_col`` in
+    # ``MARKETPLACE_CONFIGS``:
+    #     Blink → 'total_amount'           (sum incl. taxes)
+    #     RK    → 'Total accepted cost'    (qty × cost)
+    #     Myntra → not configured yet      (stays None → email shows ₹0)
+    #
+    # When ``amount_col`` is missing or the cell is blank/NaN, this
+    # stays ``None``. The email's aggregator treats None as 0 so the
+    # Amount stat always renders consistently across marketplaces.
+    amount: Optional[float] = None
+
     # Mapping resolution
     cust_no: str = ''
     ship_to: str = ''
@@ -96,6 +113,39 @@ class SORow:
     mrp: Optional[float] = None
     gst_code: str = ''
 
+    # v1.6.0: HSN cross-check (currently used by Reliance only).
+    # Some marketplaces carry an HSN/SAC Code on their punch file for
+    # each line — Reliance does, and discrepancies between the
+    # marketplace's HSN and our master's HSN are a tax/compliance
+    # risk (wrong HSN → wrong GST rate → ERP posts incorrect tax).
+    # When the marketplace config declares ``hsn_col``, the engine
+    # populates these three fields and surfaces mismatches on the
+    # Validation sheet.
+    #
+    # All three stay at their defaults when the marketplace has no
+    # ``hsn_col`` configured. The Validation sheet only adds its HSN
+    # columns when at least one row has a non-empty
+    # ``hsn_check_status``, so other marketplaces' output is
+    # unaffected.
+    hsn_punch: str = ''          # raw HSN from the marketplace file
+    hsn_master: str = ''         # what Items_March.xlsx carries for this item
+    hsn_check_status: str = ''   # '' | 'OK' | 'MISMATCH' | 'NOT_IN_MASTER'
+
+    # v1.7.0: Multi-file upload traceability (Reliance-only today).
+    # When the user uploads multiple Reliance PO files in one batch,
+    # the engine tags every row produced from each file with the
+    # PO number and location parsed from that file's title — the same
+    # '5000466441  BHIWANDI (Reliance)' string Reliance puts on row 0
+    # of the punch. The Raw Data sheet surfaces this as a leading
+    # "Source" column so you can tell at a glance which file each
+    # row came from when 5 POs are combined in one workbook.
+    #
+    # For single-file runs these stay at their defaults and the
+    # Raw Data sheet omits the Source column (backward-compatible
+    # with all Blink/Myntra/RK output layouts).
+    source_po: str = ''          # e.g. '5000466441' (same as po_number for Reliance)
+    source_location: str = ''    # e.g. 'BHIWANDI (Reliance)' (same as location for Reliance)
+
     # Validation status
     validation_status: str = ''
 
@@ -127,5 +177,45 @@ class ProcessingResult:
     compare_basis: str = 'cost'     # 'landing' | 'cost'
     compare_label: str = 'Price'    # friendly label shown in Validation
 
+    # v1.7.0: Multi-file upload counter. Stays at 1 for the ordinary
+    # single-file flow; set by ``MarketplaceEngine.process_multi`` to
+    # the number of files aggregated when a batch upload was run
+    # (currently Reliance only). The email builder and SO filename
+    # generator use this to label the output appropriately —
+    # "Reliance_5PO" vs "Reliance_SO" for example.
+    input_files_count: int = 1
+
+    # v1.9.0: Warehouse ERP location code used for D365 export.
+    # Before v1.9.0 this was hardcoded to 'PICK' in the exporter.
+    # The GUI now exposes a Warehouse dropdown (AHD/BLR/...) and
+    # stamps the selected warehouse's ERP code onto the result so
+    # D365Exporter can use it uniformly on Sales Header col K and
+    # Sales Line col F. Stays at 'PICK' when unset for backwards
+    # compatibility with any code paths that construct a
+    # ProcessingResult directly without going through the GUI.
+    warehouse_code: str = 'PICK'
+    warehouse_display: str = 'AHD'   # friendly label, for Summary footer + email
+
     # Original DataFrame (for the Raw Data sheet)
     raw_df: Any = None
+
+    # Runtime metrics (populated by the GUI after engine+exporter complete).
+    # Used by the email report footer to show "Processing: X.XX seconds"
+    # and by the D365 export popup to show timing. None until measured.
+    elapsed_seconds: Optional[float] = None
+
+    # v1.5.6: Alias-resolved marketplace config.
+    #
+    # The engine's ``_resolve_column_aliases`` picks a concrete header
+    # name for every list-valued ``*_col`` config entry based on what
+    # actually appears in the uploaded punch file. Downstream consumers
+    # (raw_data_sheet, validation_sheet, etc.) must use these resolved
+    # names rather than re-reading ``MARKETPLACE_CONFIGS`` — otherwise
+    # they hit the unresolved list values and crash with errors like
+    # ``TypeError: unhashable type: 'list'`` when doing
+    # ``col_name in df.columns``.
+    #
+    # Populated by :meth:`MarketplaceEngine.process` as soon as the
+    # file is read; stays ``None`` if processing aborted before that
+    # point (e.g. file couldn't be opened).
+    resolved_config: Optional[dict] = None

@@ -5,7 +5,7 @@ exporter.sheets.summary_sheet
 Writes the **Summary** sheet — a per-PO grouped view for human
 verification before the SO is imported.
 
-Column layout (8 columns)::
+Column layout (9 columns, v1.5.3)::
 
     1. PO
     2. Location (Raw)      — what the marketplace sent us
@@ -14,7 +14,11 @@ Column layout (8 columns)::
     5. Ship-to
     6. Items               — count of lines on this PO
     7. Total Qty           — sum of quantities across lines
-    8. Status              — 'OK' (green) or 'UNMAPPED' (red)
+    8. Total Amount        — sum of SORow.amount across lines (₹, Indian
+                             format). Populated when the marketplace has
+                             ``amount_col`` configured (Blink, RK);
+                             displays ₹0 when not (Myntra today).
+    9. Status              — 'OK' (green) or 'UNMAPPED' (red)
 
 Visual aids
 -----------
@@ -22,7 +26,7 @@ Visual aids
   names differ (case-insensitive). Means we used a fuzzy match — worth
   a quick eyeball to confirm we matched to the right Ship-To.
 * Status pill: green for OK, red for UNMAPPED.
-* TOTAL row at the bottom for Items + Qty.
+* TOTAL row at the bottom for Items + Qty + Amount.
 * Info sub-row: marketplace, margin %, filename, generation timestamp.
 * Legend row appears **only when** there's at least one yellow
   highlight — keeps clean runs free of noise.
@@ -43,7 +47,7 @@ from online_po_processor.exporter._styles import (
 
 _HEADERS = [
     'PO', 'Location (Raw)', 'Location (Mapped)',
-    'Cust No', 'Ship-to', 'Items', 'Total Qty', 'Status',
+    'Cust No', 'Ship-to', 'Items', 'Total Qty', 'Total Amount', 'Status',
 ]
 
 # 1-based column indices for cells we style specially.
@@ -52,7 +56,18 @@ _COL_RAW_LOC = 2
 _COL_MAPPED_LOC = 3
 _COL_ITEMS = 6
 _COL_QTY = 7
-_COL_STATUS = 8
+_COL_AMOUNT = 8    # v1.5.3 — new column
+_COL_STATUS = 9    # shifted right by 1 to make room for Amount
+
+# Indian-format rupee number format. The backslash-escaped rupee symbol
+# (₹) is literal-escaped so Excel treats it as a currency prefix rather
+# than trying to parse it. ``##\\,##\\,##0`` gives the lakh/crore
+# grouping (e.g. 14,29,265 instead of 1,429,265). No decimals — amount
+# values on marketplace punch files are already at whole-rupee precision
+# for the big-picture summary view.
+_INR_INDIAN_FORMAT = '[>=10000000]"\u20B9"##\\,##\\,##\\,##0;' \
+                      '[>=100000]"\u20B9"##\\,##\\,##0;' \
+                      '"\u20B9"##,##0'
 
 
 def write(wb, result: ProcessingResult) -> None:
@@ -68,7 +83,8 @@ def write(wb, result: ProcessingResult) -> None:
     # ── Group by PO ─────────────────────────────────────────────────────
     # Every row of a given PO shares location/cust_no/ship_to (guaranteed
     # by the engine — one PO = one delivery location). So we capture those
-    # from the first SORow seen for each PO, then accumulate Items + Qty.
+    # from the first SORow seen for each PO, then accumulate Items + Qty
+    # + Amount.
     po_groups: Dict[str, dict] = {}
     for so_row in result.rows:
         if so_row.po_number not in po_groups:
@@ -80,9 +96,12 @@ def write(wb, result: ProcessingResult) -> None:
                 'mapped': so_row.mapped,
                 'items': 0,
                 'qty': 0,
+                'amount': 0.0,
             }
         po_groups[so_row.po_number]['items'] += 1
         po_groups[so_row.po_number]['qty'] += so_row.qty
+        # v1.5.3: sum amount; None (Myntra) contributes 0 silently.
+        po_groups[so_row.po_number]['amount'] += float(so_row.amount or 0.0)
 
     # ── Data rows ───────────────────────────────────────────────────────
     r = 2
@@ -96,6 +115,14 @@ def write(wb, result: ProcessingResult) -> None:
         data_cell(ws, r, 5, info['ship_to'])
         data_cell(ws, r, _COL_ITEMS, info['items'])
         data_cell(ws, r, _COL_QTY, info['qty'])
+        # v1.5.3: Total Amount in INR Indian format (lakh/crore grouping).
+        # Stored as the raw float; Excel applies the Indian format so the
+        # visible value reads like ₹14,29,265 while sums/filters still
+        # work on the underlying number.
+        data_cell(
+            ws, r, _COL_AMOUNT, info['amount'],
+            number_format=_INR_INDIAN_FORMAT,
+        )
         data_cell(ws, r, _COL_STATUS, status)
 
         # Yellow highlight when raw ≠ mapped (case-insensitive).
@@ -120,6 +147,7 @@ def write(wb, result: ProcessingResult) -> None:
     # ── Totals row ──────────────────────────────────────────────────────
     total_items = sum(g['items'] for g in po_groups.values())
     total_qty = sum(g['qty'] for g in po_groups.values())
+    total_amount = sum(g['amount'] for g in po_groups.values())
 
     data_cell(ws, r, _COL_PO, 'TOTAL')
     ws.cell(row=r, column=_COL_PO).font = BOLD_DATA_FONT
@@ -127,6 +155,11 @@ def write(wb, result: ProcessingResult) -> None:
     ws.cell(row=r, column=_COL_ITEMS).font = BOLD_DATA_FONT
     data_cell(ws, r, _COL_QTY, total_qty)
     ws.cell(row=r, column=_COL_QTY).font = BOLD_DATA_FONT
+    data_cell(
+        ws, r, _COL_AMOUNT, total_amount,
+        number_format=_INR_INDIAN_FORMAT,
+    )
+    ws.cell(row=r, column=_COL_AMOUNT).font = BOLD_DATA_FONT
 
     # ── Info sub-row ────────────────────────────────────────────────────
     r += 2

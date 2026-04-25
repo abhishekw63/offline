@@ -49,7 +49,7 @@ Row styling
 """
 
 from __future__ import annotations
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
@@ -81,7 +81,13 @@ def write(wb, result: ProcessingResult) -> None:
     validation_lookup = _build_validation_lookup(result)
 
     # ── Find the marketplace's config (for col names + ref_fob_col) ─────
-    marketplace_cfg = next(
+    # v1.5.6: prefer the alias-resolved config stashed on the result
+    # by the engine — it has list-valued columns (e.g. Myntra's
+    # ``po_col = ['PO', 'PO Number']``) already collapsed to the
+    # single name that actually appeared in the uploaded file.
+    # Falling back to MARKETPLACE_CONFIGS here would re-introduce
+    # the list and crash ``col in df.columns`` later.
+    marketplace_cfg = result.resolved_config or next(
         (cfg for cfg in MARKETPLACE_CONFIGS.values()
          if cfg['party_name'] == result.marketplace),
         None,
@@ -89,14 +95,70 @@ def write(wb, result: ProcessingResult) -> None:
     ref_fob_col_name = (marketplace_cfg or {}).get('ref_fob_col')
     has_ref_diff = bool(ref_fob_col_name) and ref_fob_col_name in df.columns
 
-    # ── Original (left) headers ─────────────────────────────────────────
-    orig_col_count = len(df.columns)
-    for col_idx, col_name in enumerate(df.columns, start=1):
+    # ── v1.7.0: Source column + synthetic column handling ───────────────
+    # Reliance's engine pre-processor injects '__po__' and '__loc__'
+    # columns onto every data row (because the source file carries
+    # those values out-of-band in a merged title cell, not in per-row
+    # columns). For multi-file batches the merger also adds
+    # '__source_file__' so we can trace which upload produced each
+    # row.
+    #
+    # These are INTERNAL markers — we don't want them to appear in
+    # the user-facing Raw Data sheet with the underscore names. What
+    # we DO want is a single readable "Source" column that surfaces
+    # the PO + location together ("5000466441 BHIWANDI (Reliance)") so
+    # users scanning a 125-row combined batch can tell which rows
+    # came from which PO at a glance.
+    #
+    # Implementation:
+    #   * If any synthetic column exists, build a combined Source
+    #     value per row and prepend it as a proper first column.
+    #   * Filter the synthetic columns out of the displayed DataFrame
+    #     so they don't appear twice.
+    SYNTHETIC_COLS = {'__po__', '__loc__', '__source_file__'}
+    has_source = (
+        '__po__' in df.columns and '__loc__' in df.columns
+    )
+
+    # Build per-row source values BEFORE filtering the columns out.
+    source_values: List[str] = []
+    if has_source:
+        for _, r in df.iterrows():
+            po_val = r.get('__po__', '')
+            loc_val = r.get('__loc__', '')
+            po_str = str(po_val).strip() if pd.notna(po_val) else ''
+            loc_str = str(loc_val).strip() if pd.notna(loc_val) else ''
+            if po_str and loc_str:
+                source_values.append(f"{po_str} {loc_str}")
+            elif po_str:
+                source_values.append(po_str)
+            else:
+                source_values.append('')
+
+    # Display DataFrame: everything except synthetic marker columns.
+    display_cols = [c for c in df.columns if c not in SYNTHETIC_COLS]
+    source_offset = 1 if has_source else 0  # Source lands in col 1 if present
+
+    # ── Header row ──────────────────────────────────────────────────────
+    # If we're showing a Source column, it occupies column 1 with a
+    # distinctive fill so it reads as meta (not marketplace data).
+    if has_source:
+        src_cell = ws.cell(row=1, column=1, value='Source')
+        src_cell.font = HEADER_FONT
+        src_cell.fill = CALC_FILL  # green — "calculated/derived", not raw
+        src_cell.alignment = Alignment(horizontal='center', vertical='center')
+        src_cell.border = BORDER
+
+    # Original headers (shifted right by source_offset).
+    for i, col_name in enumerate(display_cols):
+        col_idx = source_offset + i + 1
         cell = ws.cell(row=1, column=col_idx, value=str(col_name))
         cell.font = HEADER_FONT
         cell.fill = RAW_HDR_FILL
         cell.alignment = Alignment(horizontal='center', vertical='center')
         cell.border = BORDER
+
+    orig_col_count = source_offset + len(display_cols)
 
     # ── Calc (right) header labels ──────────────────────────────────────
     diff_label = (f"Diffn with {result.compare_label}"
@@ -139,9 +201,22 @@ def write(wb, result: ProcessingResult) -> None:
     base_c = orig_col_count + 1  # first calc column (1-based)
 
     for r, (_idx, raw_row) in enumerate(df.iterrows(), start=2):
-        _write_raw_row(ws, r, df, raw_row)
+        # v1.7.0: write the Source cell (col 1) if it's present.
+        # Uses the precomputed values from source_values rather than
+        # re-deriving per row.
+        if has_source:
+            data_cell(ws, r, 1, source_values[r - 2])
 
-        # Find this row's validation match
+        # Write the marketplace's own raw columns, skipping the
+        # synthetic __po__/__loc__/__source_file__ markers that we
+        # already distilled into the Source column.
+        _write_raw_row(
+            ws, r, raw_row, display_cols, start_col=source_offset + 1,
+        )
+
+        # Find this row's validation match. The PO-column rename for
+        # Reliance (po_col='__po__') is fine here because the raw_row
+        # still carries __po__ even though we hid it from display.
         po_val, lookup_val = _derive_row_key(
             raw_row, df, config_po_col, config_item_col, config_ean_col,
         )
@@ -180,20 +255,40 @@ def _build_validation_lookup(
     return lookup
 
 
-def _write_raw_row(ws, r: int, df: pd.DataFrame, raw_row: pd.Series) -> None:
+def _write_raw_row(
+    ws, r: int, raw_row: pd.Series,
+    display_cols: List[str], start_col: int = 1,
+) -> None:
     """
-    Copy all original columns of ``raw_row`` into row ``r``.
+    Copy ``raw_row`` into sheet row ``r``, writing only the columns
+    named in ``display_cols`` and starting at spreadsheet column
+    ``start_col``.
+
+    v1.7.0 reworked to take an explicit column list rather than
+    reading ``df.columns`` so callers can exclude synthetic columns
+    (``__po__``/``__loc__``/``__source_file__``) from the display
+    while keeping them available on ``raw_row`` for lookups.
 
     Timestamps are formatted ``dd-mm-yyyy``. NaNs become empty strings.
     Everything else is passed through to openpyxl as-is.
+
+    Args:
+        ws:            Target worksheet.
+        r:             Spreadsheet row number (1-based).
+        raw_row:       Series for this row — may contain columns not
+                       in ``display_cols``; those are ignored.
+        display_cols:  Ordered list of column names to write.
+        start_col:     Spreadsheet column (1-based) to start writing
+                       at. Used to leave room for a leading Source
+                       column when Reliance's pre-process ran.
     """
-    for col_idx, col_name in enumerate(df.columns, start=1):
+    for col_offset, col_name in enumerate(display_cols):
         val = raw_row[col_name]
         if isinstance(val, pd.Timestamp):
             val = val.strftime('%d-%m-%Y')
         elif pd.isna(val):
             val = ''
-        data_cell(ws, r, col_idx, val)
+        data_cell(ws, r, start_col + col_offset, val)
 
 
 def _derive_row_key(raw_row: pd.Series, df: pd.DataFrame,

@@ -39,8 +39,12 @@ from online_po_processor.data.mapping_loader import MappingLoader
 
 # Set of GST codes we know how to handle. Anything outside this set
 # triggers a warning and falls back to 18% in MasterLoader.
+# v1.9.1: added 'G-0' and 'G-0-S' as recognised 0% codes — the
+# cost calculation already handled them in calc_cost_price, but the
+# engine was incorrectly flagging them as "unknown GST code" in a
+# warning because they weren't listed here.
 _KNOWN_GST_CODES = frozenset({
-    '0-G',
+    '0-G', 'G-0', 'G-0-S',
     'G-3', 'G-3-S',
     'G-5', 'G-5-S',
     'G-12', 'G-12-S',
@@ -74,6 +78,149 @@ class MarketplaceEngine:
 
     # ── Public entry point ─────────────────────────────────────────────
 
+    def process_multi(
+        self,
+        filepaths: List[str],
+        config: Dict[str, Any],
+        margin_pct: float = 0.70,
+    ) -> ProcessingResult:
+        """
+        Batch-process multiple punch files into ONE combined result.
+
+        Currently used exclusively by Reliance where the user receives
+        one PO file per order and wants to process 5 POs (5 files) as
+        a single SO batch. Other marketplaces don't call this because
+        they consolidate POs inside a single file natively (Blink's
+        35 POs in one punch, Myntra's 4 POs in one dump, etc.).
+
+        Per-file failures are isolated: if file 3 of 5 has a bad
+        title row or a missing sheet, files 1/2/4/5 still produce
+        SORows in the combined output and file 3's error appears in
+        the Warnings sheet (prefixed with the bad file's basename
+        so the user can tell which upload caused it). A single bad
+        file never aborts the whole batch.
+
+        The returned ``ProcessingResult``:
+          * ``rows`` is the concatenation of all files' rows.
+          * ``warnings`` is all files' warnings, each prefixed with
+            ``[<filename>]`` when the warning came from a specific
+            file (vs a batch-level warning which has no prefix).
+          * ``input_file`` is the basename of the FIRST file (for
+            display in the email banner header).
+          * ``input_file_path`` is the full path of the FIRST file
+            (so SOExporter writes output next to the batch's first
+            file — typical case: all files live in the same folder).
+          * ``input_files_count`` is ``len(filepaths)``.
+          * ``raw_df`` is the vertical concatenation of all files'
+            DataFrames with source columns preserved.
+
+        Args:
+            filepaths:  List of Excel file paths. Must not be empty.
+            config:     Marketplace config (Reliance's entry).
+            margin_pct: Run margin as decimal.
+
+        Returns:
+            Combined ``ProcessingResult``. Callers that want to know
+            which files contributed can inspect each row's
+            ``source_po``/``source_location``.
+        """
+        if not filepaths:
+            # Return an empty result with a batch-level warning so the
+            # GUI can show "no files selected" rather than crash.
+            empty = ProcessingResult(marketplace=config['party_name'])
+            empty.warnings.append((
+                '', '',
+                "process_multi called with empty file list — nothing "
+                "to process."
+            ))
+            return empty
+
+        if len(filepaths) == 1:
+            # Single-file batch is just a delegated single-file run.
+            # No tagging needed, no concatenation overhead.
+            r = self.process(filepaths[0], config, margin_pct)
+            r.input_files_count = 1
+            return r
+
+        # ── Multi-file path ────────────────────────────────────────────
+        logging.info("process_multi: starting batch of %d files",
+                     len(filepaths))
+
+        combined = ProcessingResult(
+            marketplace=config['party_name'],
+            input_file=os.path.basename(filepaths[0]),
+            input_file_path=filepaths[0],
+            margin_pct=margin_pct,
+            compare_basis=config.get('compare_basis', 'cost'),
+            compare_label=config.get('compare_label', 'Price'),
+            input_files_count=len(filepaths),
+        )
+
+        per_file_dfs: List[pd.DataFrame] = []
+
+        for idx, fp in enumerate(filepaths, start=1):
+            basename = os.path.basename(fp)
+            logging.info("process_multi: [%d/%d] processing %s",
+                         idx, len(filepaths), basename)
+            try:
+                sub = self.process(fp, config, margin_pct)
+            except Exception as e:  # noqa: BLE001
+                # Never let a single file crash the batch. Log the
+                # failure, tag it with the filename, move on.
+                logging.exception(
+                    "process_multi: file %s raised an exception",
+                    basename,
+                )
+                combined.warnings.append((
+                    '', '',
+                    f"[{basename}] Failed to process: {e}"
+                ))
+                continue
+
+            # Merge: rows pass through untouched — their source_po and
+            # source_location were already tagged by _process_row.
+            combined.rows.extend(sub.rows)
+
+            # Prefix every warning with the filename so the user can
+            # tell which upload caused which warning in a combined
+            # batch. Batch-level warnings (empty PO + empty location
+            # tuple components from process_multi itself) stay
+            # unprefixed.
+            for po, loc, msg in sub.warnings:
+                combined.warnings.append((po, loc, f"[{basename}] {msg}"))
+
+            # Keep the file's resolved config on the combined result.
+            # All files in a batch share the same marketplace config so
+            # the last one wins (they're all equivalent anyway).
+            if sub.resolved_config is not None:
+                combined.resolved_config = sub.resolved_config
+
+            # Accumulate raw DataFrames for later concatenation. Tag
+            # each with a __source_file__ column so Raw Data can still
+            # distinguish them if someone wants to filter. Source PO
+            # and location live on SORows themselves (more precise).
+            if sub.raw_df is not None and not sub.raw_df.empty:
+                df_tagged = sub.raw_df.copy()
+                df_tagged['__source_file__'] = basename
+                per_file_dfs.append(df_tagged)
+
+        # Concatenate raw_df across files. ``sort=False`` keeps columns
+        # in the order of the first file; missing columns in later
+        # files just become NaN in the combined frame.
+        if per_file_dfs:
+            combined.raw_df = pd.concat(
+                per_file_dfs, ignore_index=True, sort=False,
+            )
+        else:
+            combined.raw_df = pd.DataFrame()
+
+        logging.info(
+            "process_multi: batch done — %d total rows from %d files, "
+            "%d warnings",
+            len(combined.rows), len(filepaths), len(combined.warnings),
+        )
+        return combined
+
     def process(self, filepath: str, config: Dict[str, Any],
                 margin_pct: float = 0.70) -> ProcessingResult:
         """
@@ -100,15 +247,21 @@ class MarketplaceEngine:
         )
 
         # ── Read file ───────────────────────────────────────────────────
-        # v1.4.2: All marketplace punch files carry their data on 'Sheet1'.
-        # Other sheets in the workbook are user-side pivots / manual calc
-        # / sidecars that must NOT be read by the script. Previously we
-        # defaulted to pandas' "first sheet" behavior which silently
-        # latched onto Sheet2/Sheet4 when a pivot sheet came first —
-        # that's now fixed across the board.
+        # v1.4.2: Most marketplace punch files carry data on 'Sheet1'.
+        # v1.6.0: Reliance is the exception — its file is the raw PO
+        # attachment that has 6 sheets, with clean flat data on a
+        # sheet literally called 'PO' (the other sheets are messy
+        # auto-generated renderings of the same data). So the config
+        # can now override the sheet name via ``source_sheet``.
         #
-        # If 'Sheet1' doesn't exist (highly unusual), we fall back to the
-        # first sheet and log a warning so the user can spot the issue
+        # Other sheets in the workbook are user-side pivots / manual
+        # calc / sidecars that must NOT be read by the script.
+        # Previously we defaulted to pandas' "first sheet" behavior
+        # which silently latched onto Sheet2/Sheet4 when a pivot sheet
+        # came first — that's now fixed across the board.
+        #
+        # If the target sheet doesn't exist, we fall back to the first
+        # sheet and log a warning so the user can spot the issue
         # rather than getting a cryptic KeyError downstream.
         try:
             available_sheets = pd.ExcelFile(filepath).sheet_names
@@ -118,20 +271,36 @@ class MarketplaceEngine:
             ))
             return result
 
-        if 'Sheet1' in available_sheets:
-            sheet_to_read = 'Sheet1'
-        else:
-            sheet_to_read = available_sheets[0]
-            result.warnings.append((
-                '', '',
-                f"'Sheet1' not found in file — falling back to "
-                f"'{sheet_to_read}'. Available sheets: {available_sheets}"
-            ))
-            logging.warning("'Sheet1' missing; reading '%s' instead",
-                             sheet_to_read)
+        # Per-marketplace sheet override. Values:
+        #   * Omitted / ``'Sheet1'`` — most marketplaces
+        #   * ``'PO'`` — Reliance (exact sheet name)
+        #   * ``'PO_*'`` — Zepto (prefix match) (v1.8.0)
+        #
+        # Zepto's dumps put the data on a sheet whose name varies per
+        # export — literally ``PO_<random-hex>`` like
+        # ``PO_64863340b23e6c90`` or ``PO_c881cfb0a4fa2ebc``. The
+        # wildcard lets us match any of them without reconfiguring
+        # per file. If multiple matching sheets exist we take the
+        # first; duplicates aren't expected and would indicate a
+        # malformed dump.
+        target_sheet = config.get('source_sheet', 'Sheet1')
+
+        sheet_to_read = self._resolve_source_sheet(
+            target_sheet, available_sheets, result,
+        )
+        if sheet_to_read is None:
+            # _resolve_source_sheet has appended an abort warning.
+            return result
+
+        # Header row is configurable too — Reliance's 'PO' sheet has
+        # its header on row 1 (the title merged-cell occupies row 0),
+        # while everyone else is 0-indexed.
+        header_row = config.get('header_row', 0)
 
         try:
-            df = pd.read_excel(filepath, sheet_name=sheet_to_read, header=0)
+            df = pd.read_excel(
+                filepath, sheet_name=sheet_to_read, header=header_row,
+            )
         except Exception as e:  # noqa: BLE001 — we want to surface ANY read error
             result.warnings.append((
                 '', '',
@@ -141,7 +310,54 @@ class MarketplaceEngine:
 
         logging.info("Read %d rows from %s",
                      len(df), os.path.basename(filepath))
+
+        # ── Marketplace-specific pre-processor ──────────────────────────
+        # Some marketplaces carry the PO number and/or Location in a
+        # header/title position rather than per-data-row. For those, a
+        # pre-processor hook parses the out-of-band values and injects
+        # synthetic columns so the rest of the pipeline sees a normal
+        # wide-format DataFrame.
+        #
+        # Currently used by Reliance (parses row 0's merged title
+        # like "5000466441  BHIWANDI (Reliance)" into per-row
+        # ``__po__`` and ``__loc__`` columns).
+        pre_process = config.get('pre_process')
+        if pre_process == 'reliance_po_sheet':
+            df = self._preprocess_reliance(
+                filepath, sheet_to_read, df, config, result,
+            )
+            if df is None:
+                return result  # warning already appended
+
         result.raw_df = df
+
+        # ── v1.5.5: Resolve column aliases against actual headers ──────
+        # Marketplace configs may declare a column key as a LIST of
+        # acceptable names when the marketplace's punch file sometimes
+        # arrives with different headers for the same field. Myntra is
+        # the canonical case: the PO column is sometimes labeled 'PO'
+        # and sometimes 'PO Number' depending on which dashboard
+        # exported the dump. We pick the first name that exists in the
+        # DataFrame and collapse the list back to a single string, so
+        # the rest of the pipeline sees a normal scalar config with no
+        # awareness that aliases ever existed.
+        #
+        # Works for any column key that could reasonably have variant
+        # names: po_col, loc_col, qty_col, ean_col, item_col, fob_col,
+        # amount_col, etc. Non-list values pass through untouched
+        # (backward-compatible).
+        config = self._resolve_column_aliases(config, df.columns, result)
+        if config is None:
+            # _resolve_column_aliases already appended a warning
+            return result
+
+        # v1.5.6: stash the resolved config on the result so
+        # downstream exporter sheets can read alias-resolved column
+        # names directly instead of hitting the original module-level
+        # MARKETPLACE_CONFIGS (which still has list values). Without
+        # this, raw_data_sheet crashed with "unhashable type: 'list'"
+        # when doing ``col in df.columns`` against the unresolved list.
+        result.resolved_config = config
 
         # ── Required-column validation ──────────────────────────────────
         if not self._validate_required_columns(df, config, result):
@@ -182,6 +398,367 @@ class MarketplaceEngine:
         return result
 
     # ── Column validation helpers ──────────────────────────────────────
+
+    @staticmethod
+    def _resolve_column_aliases(
+        config: Dict[str, Any],
+        df_columns,
+        result: ProcessingResult,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Normalize every ``*_col`` config key against actual DataFrame
+        headers. Handles three forms of mismatch:
+
+        1. **List alias** — the config value is a list of candidate
+           header names, e.g. ``'po_col': ['PO', 'PO Number']``. We
+           pick the first entry that matches. List order IS preference
+           order.
+
+        2. **Case / whitespace drift** (v1.8.1, opt-in via
+           ``config['case_insensitive_cols'] = True``) — the config
+           value is a plain string, but the actual header in the file
+           differs only in case or surrounding/internal whitespace.
+           E.g. config says ``'HSN'`` but the file has ``'Hsn'``, or
+           config says ``'PO Number'`` but the file has
+           ``'Po  Number'`` (double space). The resolver finds these
+           via a lowercase + whitespace-collapsed match and substitutes
+           the file's actual header string into the config (because
+           downstream pandas indexing needs exact match).
+
+           Rationale: marketplace dashboards occasionally reformat their
+           exports — Myntra shipped three casings of its PO header in
+           two weeks; Reliance shipped ``HSN`` vs ``Hsn`` across
+           batches. Without this flag, every drift forces a code
+           update. With it, the engine absorbs drift automatically.
+           The flag is opt-in per marketplace so stable-header
+           marketplaces (Blink/RK/Zepto) still fail LOUDLY on a real
+           mistake rather than silently matching something unintended.
+
+        3. **Not found at all** — emits a warning. For required
+           columns (po/loc/qty/ean/item) this aborts the run; for
+           optional columns the key is set to None and the pipeline
+           continues.
+
+        The returned config is a shallow copy ready for the rest of the
+        pipeline (which expects scalar, exact-match column names).
+
+        Args:
+            config:     Original marketplace config dict.
+            df_columns: Pandas columns of the loaded punch file
+                        (``df.columns``).
+            result:     ProcessingResult for appending warnings about
+                        unresolvable columns.
+
+        Returns:
+            New config dict with all ``*_col`` entries normalized, or
+            ``None`` if a required column can't be resolved (caller
+            should return the result immediately; warning already
+            appended).
+        """
+        resolved = dict(config)
+        available_list = list(df_columns)
+        available_set = set(available_list)
+        case_insensitive = bool(config.get('case_insensitive_cols'))
+
+        # v1.8.1: build a lowercase+whitespace-normalized lookup so we
+        # can find headers by "semantic" equality. Example entries:
+        #   'hsn' -> 'HSN'
+        #   'po number' -> 'PO Number'
+        # We canonicalize by lowercasing, stripping edges, and
+        # collapsing internal multi-space runs.
+        def _normalize(s: Any) -> str:
+            if s is None:
+                return ''
+            return ' '.join(str(s).split()).lower()
+
+        lower_lookup: Dict[str, str] = {}
+        if case_insensitive:
+            for actual in available_list:
+                lower_lookup.setdefault(_normalize(actual), str(actual))
+
+        def _find(name: str) -> Optional[str]:
+            """Return the file's actual column for ``name``, or None.
+
+            Exact match first (always); case-insensitive fallback
+            only when the marketplace opts in.
+            """
+            if name in available_set:
+                return name
+            if case_insensitive:
+                return lower_lookup.get(_normalize(name))
+            return None
+
+        required_keys = {'po_col', 'loc_col', 'qty_col',
+                         'ean_col', 'item_col'}
+
+        for key, value in list(config.items()):
+            if not key.endswith('_col'):
+                continue
+
+            # ── List alias path ────────────────────────────────────────
+            if isinstance(value, list):
+                chosen: Optional[str] = None
+                for candidate in value:
+                    hit = _find(candidate)
+                    if hit is not None:
+                        chosen = hit
+                        break
+
+                if chosen is not None:
+                    resolved[key] = chosen
+                    logging.info(
+                        "Column alias: %s = %r (from options %r)",
+                        key, chosen, value,
+                    )
+                else:
+                    if key in required_keys:
+                        result.warnings.append((
+                            '', '',
+                            f"Required column '{key}' not found — tried "
+                            f"{value!r}, but none exist in the punch "
+                            f"file. Available columns: "
+                            f"{available_list[:15]}..."
+                        ))
+                        return None
+                    resolved[key] = None
+                    logging.info(
+                        "Column alias: %s = None (none of %r found)",
+                        key, value,
+                    )
+                continue
+
+            # ── Scalar path: apply case-insensitive lookup if opted in ─
+            if isinstance(value, str) and value:
+                hit = _find(value)
+                if hit is not None and hit != value:
+                    # Found it, but under a different casing/spacing.
+                    # Substitute the file's actual header so downstream
+                    # pandas indexing works.
+                    resolved[key] = hit
+                    logging.info(
+                        "Column case-fold: %s = %r (config said %r)",
+                        key, hit, value,
+                    )
+                # If hit == value, nothing to do. If hit is None, let
+                # the validator complain downstream — this keeps
+                # behavior identical to pre-v1.8.1 for marketplaces
+                # without case_insensitive_cols, and gives a specific
+                # "required column missing" message via
+                # _validate_required_columns for those with it.
+
+        return resolved
+
+    def _resolve_source_sheet(
+        self,
+        target: str,
+        available: List[str],
+        result: ProcessingResult,
+    ) -> Optional[str]:
+        """
+        Pick the right sheet to read based on the config's ``source_sheet``.
+
+        Supports two match modes:
+            * **Exact match** — ``target`` equals a sheet name.
+              Used by most marketplaces (``'Sheet1'`` default, ``'PO'``
+              for Reliance).
+            * **Wildcard prefix match** — ``target`` ends with ``'*'``.
+              Strips the ``*`` and finds any sheet whose name starts
+              with the remaining prefix. Used by Zepto because its
+              data sheet is named ``'PO_<random-hex>'`` which changes
+              every dump (e.g. ``PO_64863340b23e6c90``).
+
+        Behavior on miss:
+            * **Exact miss** — falls back to the first available
+              sheet, emits a warning so the user sees what happened.
+              This has historically been kind to users whose files
+              have unexpected sheet ordering (e.g. a user-added
+              pivot sheet sitting before 'Sheet1').
+            * **Wildcard miss** — aborts with a clear error. The
+              wildcard implies a specific marketplace's data format;
+              falling back silently would produce nonsense output
+              by running the engine against whatever sheet happens
+              to come first.
+
+        Args:
+            target:     Value of ``config['source_sheet']``.
+            available:  List of sheet names in the workbook.
+            result:     For appending warnings/errors.
+
+        Returns:
+            Chosen sheet name, or ``None`` to abort processing
+            (wildcard miss only).
+        """
+        # ── Wildcard mode ───────────────────────────────────────────────
+        if target.endswith('*'):
+            prefix = target[:-1]
+            matches = [s for s in available if s.startswith(prefix)]
+
+            if len(matches) == 1:
+                return matches[0]
+
+            if not matches:
+                result.warnings.append((
+                    '', '',
+                    f"No sheet starting with {prefix!r} found in file. "
+                    f"Available sheets: {available}. "
+                    f"This marketplace requires its data sheet — check "
+                    f"that the upload is a complete, untouched dump."
+                ))
+                return None
+
+            # Multiple matches: take the first but warn.
+            chosen = matches[0]
+            result.warnings.append((
+                '', '',
+                f"Multiple sheets match {target!r}: {matches}. Using "
+                f"{chosen!r} (first match). Verify this is the correct "
+                f"data sheet."
+            ))
+            return chosen
+
+        # ── Exact mode (original behavior) ──────────────────────────────
+        if target in available:
+            return target
+
+        sheet_to_read = available[0]
+        result.warnings.append((
+            '', '',
+            f"'{target}' not found in file — falling back to "
+            f"'{sheet_to_read}'. Available sheets: {available}"
+        ))
+        logging.warning("'%s' missing; reading '%s' instead",
+                         target, sheet_to_read)
+        return sheet_to_read
+
+    def _preprocess_reliance(
+        self,
+        filepath: str,
+        sheet_name: str,
+        df: pd.DataFrame,
+        config: Dict[str, Any],
+        result: ProcessingResult,
+    ) -> Optional[pd.DataFrame]:
+        """
+        Inject synthetic ``__po__`` and ``__loc__`` columns for Reliance.
+
+        Reliance's raw PO attachment doesn't carry the PO number or
+        delivery location in a data column — they appear as a merged
+        "title" cell on row 0 of the PO sheet, formatted like::
+
+            5000466441  BHIWANDI (Reliance)
+
+        (The first token is the 10-digit PO number; everything after
+        the first whitespace gap is the delivery location label which
+        must match an entry in the Ship-To B2B mapping sheet.)
+
+        To fit the rest of the pipeline without special-casing
+        downstream, we:
+
+        1. Re-read row 0 raw (the header=1 read we already did
+           skipped it).
+        2. Scan that row's cells for the first non-empty string.
+        3. Regex-split into PO number + location.
+        4. Inject ``__po__`` and ``__loc__`` on every data row so the
+           engine can point ``po_col='__po__'`` / ``loc_col='__loc__'``
+           and otherwise run normally.
+
+        A single-PO assumption is hard-coded. Reliance's B2B ordering
+        system always emits one PO per attachment file; if a future
+        format change merges multiple POs, the regex will match the
+        first title and silently mislabel the rest — so we also warn
+        if there's any sign of a second title row.
+
+        Args:
+            filepath:    The Reliance file on disk.
+            sheet_name:  Name of the sheet the data was read from
+                         (typically 'PO').
+            df:          Data already loaded with header=1 (i.e.
+                         title row skipped, proper headers used).
+            config:      Marketplace config (for future extension).
+            result:      For appending abort warnings.
+
+        Returns:
+            DataFrame with ``__po__`` and ``__loc__`` injected, or
+            ``None`` if the title cannot be parsed (caller should
+            ``return result`` immediately).
+        """
+        # Re-read row 0 as raw (header=None), taking only the first row.
+        try:
+            title_df = pd.read_excel(
+                filepath, sheet_name=sheet_name, header=None, nrows=1,
+            )
+        except Exception as e:  # noqa: BLE001
+            result.warnings.append((
+                '', '',
+                f"Reliance pre-process: cannot read title row of "
+                f"sheet {sheet_name!r}: {e}",
+            ))
+            return None
+
+        # Find the first non-empty string cell in row 0. The title is
+        # typically in a merged cell somewhere around columns D-E but
+        # we scan the whole row rather than hard-code a position.
+        title_text = None
+        for cell in title_df.iloc[0].tolist():
+            if cell is not None and pd.notna(cell):
+                text = str(cell).strip()
+                if text:
+                    title_text = text
+                    break
+
+        if not title_text:
+            result.warnings.append((
+                '', '',
+                f"Reliance pre-process: title row of sheet "
+                f"{sheet_name!r} is empty. Expected a cell like "
+                f"'5000466441  BHIWANDI (Reliance)' with the PO "
+                f"number and location. Cannot identify this PO.",
+            ))
+            return None
+
+        # Parse: first whitespace-delimited token = PO number, rest
+        # = location. We use split(maxsplit=1) so locations with
+        # multiple words + parentheses ("BHIWANDI (Reliance)") stay
+        # intact.
+        parts = title_text.split(maxsplit=1)
+        if len(parts) < 2:
+            result.warnings.append((
+                '', '',
+                f"Reliance pre-process: title cell {title_text!r} "
+                f"doesn't contain both a PO number and a location. "
+                f"Expected something like '5000466441  BHIWANDI "
+                f"(Reliance)'.",
+            ))
+            return None
+
+        po_number, location = parts[0].strip(), parts[1].strip()
+        logging.info(
+            "Reliance pre-process: parsed title %r → PO=%r loc=%r",
+            title_text, po_number, location,
+        )
+
+        # Inject synthetic columns. Every data row inherits the same
+        # PO and location — correct because Reliance sends one PO
+        # per file.
+        df = df.copy()
+        df['__po__'] = po_number
+        df['__loc__'] = location
+
+        # Drop rows where Qty is blank — those are separator/total
+        # rows in Reliance's layout (unlikely on the clean PO sheet
+        # but be defensive; also drops any trailing blank rows pandas
+        # might have loaded).
+        qty_col_name = config.get('qty_col', 'Qty')
+        if qty_col_name in df.columns:
+            before = len(df)
+            df = df[df[qty_col_name].notna()].reset_index(drop=True)
+            if len(df) < before:
+                logging.info(
+                    "Reliance pre-process: dropped %d blank-Qty rows",
+                    before - len(df),
+                )
+
+        return df
 
     def _validate_required_columns(self, df: pd.DataFrame,
                                     config: Dict[str, Any],
@@ -318,6 +895,27 @@ class MarketplaceEngine:
         # this None so the WMS computes it downstream) ──────────────────
         unit_price = self._extract_float(row, price_col) if price_col else None
 
+        # ── v1.5.1: Pull marketplace-native row amount when configured.
+        # ``amount_col`` is optional in MARKETPLACE_CONFIGS — when
+        # absent (fully unconfigured), ``amount`` stays None and the
+        # email aggregator treats that as 0 for the headline stat.
+        #
+        # Accepted ``amount_col`` forms:
+        #   1. ``str`` — single column name.
+        #        Blink: 'total_amount', RK: 'Total accepted cost'.
+        #   2. ``{'multiply': [col_a, col_b, ...]}`` — product of
+        #        columns (v1.5.7).
+        #        Myntra: ``['Landing Price', 'Quantity']`` → Landing × Qty.
+        #   3. ``{'multiply': [...], 'apply_margin': True}`` — product
+        #        of columns, then multiplied by the run's margin%
+        #        (v1.6.0). Used when one of the "factors" is the
+        #        derived landing value rather than a punch column.
+        #        Reliance: ``['MRP', 'Qty'] + apply_margin=True`` →
+        #        MRP × Qty × margin% = Landing × Qty.
+        amount = self._extract_amount(
+            row, config.get('amount_col'), df, margin_pct,
+        )
+
         # ── Marketplace prices: active (validation) + optional reference ─
         fob_price = self._extract_float(row, config.get('fob_col'),
                                          only_if_in_df=df)
@@ -345,12 +943,46 @@ class MarketplaceEngine:
             warned_keys=warned_keys, result=result,
         )
 
+        # ── v1.6.0: HSN cross-check (opt-in via ``hsn_col``) ────────────
+        # When the marketplace config sets ``hsn_col``, we read the
+        # HSN from the punch and compare it against the master's HSN
+        # for this item. Reliance is currently the only marketplace
+        # with this enabled — Blink/Myntra/RK's configs leave
+        # ``hsn_col`` unset and skip this block entirely.
+        #
+        # A mismatch isn't fatal — the row still flows through to
+        # the SO and email. But it lands a per-row warning so the
+        # user can audit before posting to the ERP, and the
+        # Validation sheet gains an HSN Check column.
+        hsn_punch, hsn_master, hsn_check_status = self._check_hsn(
+            row=row, ean=ean, item_no=item_no, po=po, config=config,
+            warned_keys=warned_keys, result=result,
+        )
+
+        # ── v1.7.0: Source tagging for batch/multi-file traceability ────
+        # When the marketplace went through a ``pre_process`` hook
+        # (currently Reliance), the engine parsed the PO number and
+        # location from the file's title row rather than from
+        # per-row columns. Stamp those onto the SORow so the Raw
+        # Data sheet can show a "Source" column with values like
+        # '5000466441 BHIWANDI (Reliance)' — crucial when the user
+        # uploads 5 Reliance PO files at once and wants to see
+        # which row came from which file. Stays blank for
+        # Blink/Myntra/RK, whose Raw Data sheet doesn't need it.
+        if config.get('pre_process'):
+            source_po = po
+            source_location = location
+        else:
+            source_po = ''
+            source_location = ''
+
         return SORow(
             po_number=po,
             location=location,
             item_no=item_no,
             qty=qty,
             unit_price=unit_price,
+            amount=amount,
             cust_no=cust_no,
             ship_to=ship_to,
             mapped=mapped,
@@ -365,8 +997,105 @@ class MarketplaceEngine:
             ref_diffn=ref_diffn,
             mrp=mrp,
             gst_code=gst_code,
+            hsn_punch=hsn_punch,
+            hsn_master=hsn_master,
+            hsn_check_status=hsn_check_status,
+            source_po=source_po,
+            source_location=source_location,
             validation_status=validation_status,
         )
+
+    def _check_hsn(
+        self,
+        row: pd.Series,
+        ean: str,
+        item_no: Any,
+        po: str,
+        config: Dict[str, Any],
+        warned_keys: Set[Tuple],
+        result: ProcessingResult,
+    ) -> Tuple[str, str, str]:
+        """
+        Compare the punch's HSN against the master's HSN for this item.
+
+        Only runs when the marketplace config has ``hsn_col`` set
+        (currently Reliance only). For other marketplaces returns
+        three empty strings so the Validation sheet skips its HSN
+        columns.
+
+        Status values:
+            * ``''`` — not applicable (marketplace didn't opt in).
+            * ``'OK'`` — punch HSN matches master HSN.
+            * ``'MISMATCH'`` — both known, but they differ. Warning
+              emitted (once per item_no + HSN pair via
+              ``warned_keys`` so we don't flood the log when the
+              same SKU appears many times).
+            * ``'NOT_IN_MASTER'`` — master has no HSN for this item.
+              User needs to update ``Items_March.xlsx``.
+
+        Args:
+            row:          The punch-file row (pandas Series).
+            ean:          Resolved EAN (from ``_extract_ean``).
+            item_no:      Resolved Item No from master lookup.
+            po:           PO number (for warning attribution).
+            config:       Marketplace config.
+            warned_keys:  Dedup set, shared across rows of this run.
+            result:       For appending warnings.
+
+        Returns:
+            ``(hsn_punch, hsn_master, hsn_check_status)`` tuple.
+        """
+        hsn_col = config.get('hsn_col')
+        if not hsn_col:
+            return ('', '', '')
+
+        # Read punch HSN. Normalise: Excel often stores HSN codes as
+        # floats (e.g. 33049990.0), so we strip the trailing .0 for a
+        # clean string comparison.
+        hsn_raw = row.get(hsn_col) if hsn_col in row.index else None
+        hsn_punch = ''
+        if hsn_raw is not None and pd.notna(hsn_raw):
+            try:
+                hsn_punch = str(int(float(hsn_raw)))
+            except (ValueError, TypeError):
+                hsn_punch = str(hsn_raw).strip()
+
+        # Pull master HSN. The master lookup was already done by
+        # _validate_against_master to build validation_status, but
+        # it didn't surface hsn because callers that don't need it
+        # shouldn't pay for the dict entry. Re-look up here (same
+        # key priority as the main resolution: EAN first, Item No
+        # fallback).
+        hsn_master = ''
+        if self.master is not None:
+            entry = self.master.lookup(ean) if ean else None
+            if entry is None and item_no:
+                entry = self.master.lookup(str(item_no))
+            if entry:
+                hsn_master = entry.get('hsn', '') or ''
+
+        # Decide status.
+        if not hsn_master:
+            status = 'NOT_IN_MASTER'
+        elif hsn_punch == hsn_master:
+            status = 'OK'
+        else:
+            status = 'MISMATCH'
+            # Dedup warning by (item_no, punch_hsn, master_hsn). One
+            # mismatched SKU across 50 POs shouldn't create 50
+            # warning rows.
+            warn_key = ('hsn_mismatch', str(item_no), hsn_punch, hsn_master)
+            if warn_key not in warned_keys:
+                warned_keys.add(warn_key)
+                result.warnings.append((
+                    po, '',
+                    f"HSN mismatch on Item {item_no}: "
+                    f"marketplace sent '{hsn_punch}' but master has "
+                    f"'{hsn_master}'. Verify the correct HSN with "
+                    f"the master data team before posting."
+                ))
+
+        return (hsn_punch, hsn_master, status)
 
     # ── Row-level extraction helpers ───────────────────────────────────
 
@@ -417,6 +1146,89 @@ class MarketplaceEngine:
             return float(v)
         except (ValueError, TypeError):
             return None
+
+    @classmethod
+    def _extract_amount(
+        cls,
+        row: pd.Series,
+        spec: Any,
+        df: pd.DataFrame,
+        margin_pct: float = 0.0,
+    ) -> Optional[float]:
+        """
+        Resolve a row's ``amount`` per the marketplace's ``amount_col``
+        config spec.
+
+        Accepted spec forms:
+            * ``None`` / missing     → returns ``None`` (no amount
+              configured — email will show ₹0 in the Amount stat).
+            * ``str``                → reads that column as a float.
+            * ``dict`` with:
+                - ``'multiply'`` → iterable of column names whose
+                  values are multiplied together. Any missing or
+                  non-numeric factor collapses the product to
+                  ``None`` for that row.
+                - ``'apply_margin'`` (optional, bool, v1.6.0) → if
+                  True, the final product is additionally multiplied
+                  by the run's ``margin_pct``. Used when one of the
+                  conceptual "factors" is the derived Landing Cost
+                  (e.g. Reliance: Landing × Qty = (MRP × margin) × Qty
+                  = MRP × Qty × margin%).
+
+        Returning ``None`` on any error keeps the pipeline resilient
+        — a single unparseable cell shouldn't abort the whole export.
+        The failure just contributes 0 to the headline Amount stat,
+        which the recipient can reconcile against the marketplace's
+        own invoice if needed.
+
+        Args:
+            row:        Pandas Series for the current punch-file row.
+            spec:       Whatever was in ``config.get('amount_col')``.
+            df:         DataFrame (used to short-circuit when a named
+                        column isn't present, avoiding per-row
+                        KeyErrors).
+            margin_pct: The run's margin as decimal (e.g. 0.6342).
+                        Only consulted when
+                        ``spec['apply_margin'] is True``.
+
+        Returns:
+            Computed ``float`` or ``None``.
+        """
+        if spec is None:
+            return None
+
+        # Simple column name — existing v1.5.1 behavior.
+        if isinstance(spec, str):
+            return cls._extract_float(row, spec, only_if_in_df=df)
+
+        # v1.5.7+: multiply-spec for marketplaces that don't carry a
+        # pre-calculated amount column but do carry the factors.
+        if isinstance(spec, dict) and 'multiply' in spec:
+            factors = spec['multiply']
+            if not factors:
+                return None
+            product = 1.0
+            for col in factors:
+                v = cls._extract_float(row, col, only_if_in_df=df)
+                if v is None:
+                    # Any missing/invalid factor → no amount for this
+                    # row. Callers treat None as 0 when aggregating.
+                    return None
+                product *= v
+
+            # v1.6.0: apply runtime margin% as an additional factor
+            # when requested. Reliance uses this because its
+            # "Landing Cost" isn't a column on the punch — it's
+            # derived from MRP × margin% at runtime.
+            if spec.get('apply_margin'):
+                product *= margin_pct
+
+            return product
+
+        # Unknown spec shape — log once at debug level (silent in
+        # production) and skip.
+        logging.debug("Unknown amount_col spec shape: %r", spec)
+        return None
 
     def _resolve_item_no(self, row: pd.Series, ean: str, po: str,
                           config: Dict[str, Any], item_resolution: str,
